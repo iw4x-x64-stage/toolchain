@@ -1,0 +1,42 @@
+#! /usr/bin/env bash
+
+# Copyright (c) the IW4x authors (see the AUTHORS file).
+# SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+
+# Generate the AUTHORS file of git repositories from the identity register.
+#
+usage="usage: $0 [<options>] <identities> [<dir>]"
+
+owd="$(pwd)"
+trap "{ cd '$owd'; exit 1; }" ERR
+set -o errtrace     # Trap in functions and subshells.
+set -o pipefail     # Fail if any pipeline command fails.
+shopt -s lastpipe   # Execute last pipeline command in the current shell.
+
+function info () { echo "$*" 1>&2; }
+function error () { info "error: $*"; exit 1; }
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      info "$usage"
+      exit 0
+      ;;
+    --version)
+      echo "authors @version@"
+      exit 0
+      ;;
+    # Catch invalid options.
+    #
+    -*)
+      error "unknown option: $1"
+      ;;
+    # <identities> or end of options.
+    #
+    *)
+      break
+      ;;
+  esac
+done
+
+error "$usage"
