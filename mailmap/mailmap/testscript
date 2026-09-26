@@ -60,6 +60,10 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
   :
   $* --check --commit r 2>'error: --commit specified with --check' != 0
 
+  : check-push
+  :
+  $* --check --push r 2>'error: --push specified with --check' != 0
+
   : identities-not-exist
   :
   $* r 2>"error: 'r' does not exist or is not a file" != 0
@@ -547,6 +551,121 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
 
       EOO
   }
+
+  : push
+  :
+  {{
+    # Create the upstream repository and the repository tracking it, with
+    # one commit pushed.
+    #
+    upstream = [cmdline] $g init --quiet --bare remote.git
+    track = [cmdline] $g -C repo remote add origin ../remote.git
+    publish = [cmdline] $g -C repo push --quiet --set-upstream origin main
+
+    : success
+    :
+    : Test that the .mailmap commit, and only it, reaches the upstream.
+    :
+    {
+      $upstream &remote.git/***
+      $init repo &repo/***
+      $commit --author 'jane <jane@example.org>'
+      $track
+      $publish
+
+      $mailmap --yes --push ../../r repo 2>!
+
+      git -C remote.git log --format='%s' main >>EOO
+        Update .mailmap
+        Commit
+        EOO
+
+      git -C repo rev-list --count '@{upstream}..HEAD' >'0'
+    }
+
+    : no-upstream
+    :
+    : Test that a branch without an upstream is refused before anything
+    : changes.
+    :
+    {
+      $init repo &repo/***
+      $commit --author 'jane <jane@example.org>'
+
+      $mailmap --yes --push ../../r repo 2>>"EOE" != 0
+        error: branch 'main' of '$~/repo' has no upstream to push to
+          info: set one with 'git branch --set-upstream-to' or omit --push
+        EOE
+
+      test -f repo/.mailmap == 1
+    }
+
+    : detached
+    :
+    : Test that a detached HEAD is refused before anything changes.
+    :
+    {
+      $init repo &repo/***
+      $commit --author 'jane <jane@example.org>'
+      $g -C repo checkout --quiet --detach
+
+      $mailmap --yes --push ../../r repo 2>>"EOE" != 0
+        error: HEAD of '$~/repo' is detached, so there is no branch to push
+          info: check out a branch or omit --push
+        EOE
+
+      test -f repo/.mailmap == 1
+    }
+
+    : ahead
+    :
+    : Test that a branch with unpushed commits is refused, so that the push
+    : never publishes commits other than the .mailmap one.
+    :
+    {
+      $upstream &remote.git/***
+      $init repo &repo/***
+      $commit --author 'jane <jane@example.org>'
+      $track
+      $publish
+      $commit --author 'Jane Doe <jane@example.org>'
+
+      $mailmap --yes --push ../../r repo 2>>"EOE" != 0
+        error: branch 'main' of '$~/repo' has unpushed commits
+          info: push them first or omit --push
+        EOE
+
+      test -f repo/.mailmap == 1
+    }
+
+    : rejected
+    :
+    : Test that a push the upstream rejects is reported and that the commit
+    : is kept.
+    :
+    {
+      $upstream &remote.git/***
+      $init repo &repo/***
+      $commit --author 'jane <jane@example.org>'
+      $track
+      $publish
+
+      # Advance the upstream behind the repository's back.
+      #
+      $g clone --quiet --branch main remote.git other &other/***
+      $g -C other commit --quiet --allow-empty --message 'Other' \
+        --author 'Jane Doe <jane@example.org>'
+      $g -C other push --quiet
+
+      $mailmap --yes --push ../../r repo 2>>~%EOE% != 0
+        %.*%*
+        error: push to 'origin' failed
+          info: the .mailmap commit is kept in branch 'main'
+        EOE
+
+      git -C repo log -1 --format='%s' >'Update .mailmap'
+    }
+  }}
 
   : check
   :

@@ -46,6 +46,15 @@ commit message:
 mailmap --commit identities
 ```
 
+To also push the commit to the upstream of the current branch:
+
+```
+mailmap --push identities
+```
+
+The branch must not be ahead of its upstream beforehand, so that the push
+carries only the `.mailmap` commit.
+
 To check that it is up to date, for example in CI:
 
 ```

@@ -50,6 +50,12 @@
 #   Commit the updated .mailmap. Only the .mailmap is committed, whatever else
 #   is staged.
 #
+# --push
+#
+#   Push the commit to the upstream of the current branch. Implies --commit.
+#   To push exactly this commit, the branch must not be ahead of its upstream
+#   before the update.
+#
 # --yes
 #
 #   Do not ask for confirmation before updating the .mailmap.
@@ -85,6 +91,7 @@ function run () # <cmd> <arg>...
 
 mode=update
 commit=
+push=
 yes=
 
 while [[ "$#" -gt 0 ]]; do
@@ -95,6 +102,7 @@ while [[ "$#" -gt 0 ]]; do
       info "Options:"
       info "  --check    Check that .mailmap is up to date without changing it."
       info "  --commit   Commit the updated .mailmap."
+      info "  --push     Push the commit to the upstream, implies --commit."
       info "  --yes      Do not ask for confirmation before updating."
       info "  --version  Print version and exit."
       info
@@ -111,6 +119,11 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     --commit)
       commit=true
+      shift
+      ;;
+    --push)
+      commit=true
+      push=true
       shift
       ;;
     --yes)
@@ -135,6 +148,10 @@ if [[ "$#" -lt 1 || "$#" -gt 2 ]]; then
 fi
 
 if [[ "$mode" == "check" && "$commit" ]]; then
+  if [[ "$push" ]]; then
+    error "--push specified with --check"
+  fi
+
   error "--commit specified with --check"
 fi
 
@@ -167,13 +184,15 @@ mailmap="$repo/.mailmap"
 # Make sure that git commands fail instead of prompting for
 # authentication and don't run maintenance tasks or start daemons.
 #
+# Note that we keep the credential helpers, since that is how an HTTPS
+# push authenticates without a prompt.
+#
 export GIT_TERMINAL_PROMPT=0
 
 val="\
 'maintenance.autoDetach=false' \
 'gc.autoDetach=false' \
-'core.fsmonitor=false' \
-'credential.helper='"
+'core.fsmonitor=false'"
 
 if [[ -n "$GIT_CONFIG_PARAMETERS" ]]; then
   val="$val $GIT_CONFIG_PARAMETERS"
@@ -609,9 +628,50 @@ if [[ "$commit" ]] && ! git -C "$repo" var GIT_COMMITTER_IDENT \
   exit 1
 fi
 
+# Establish where the commit is pushed to.
+#
+# The upstream is pushed to explicitly, whatever push.default says. Since git
+# pushes every commit the branch has that its upstream does not, the branch
+# must not be ahead of its upstream, so the push carries exactly our commit.
+#
+if [[ "$push" ]]; then
+  if ! branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD)"; then
+    info "error: HEAD of '$repo' is detached, so there is no branch to push"
+    info "  info: check out a branch or omit --push"
+    exit 1
+  fi
+
+  remote="$(git -C "$repo" config --get "branch.$branch.remote" || true)"
+  merge="$(git -C "$repo" config --get "branch.$branch.merge" || true)"
+
+  if [[ -z "$remote" || -z "$merge" ]]; then
+    info "error: branch '$branch' of '$repo' has no upstream to push to"
+    info "  info: set one with 'git branch --set-upstream-to' or omit --push"
+    exit 1
+  fi
+
+  if ! ahead="$(git -C "$repo" rev-list --count '@{upstream}..HEAD' \
+                  2>/dev/null)"; then
+    info "error: upstream of branch '$branch' of '$repo' is not fetched"
+    info "  info: run 'git fetch $remote' or omit --push"
+    exit 1
+  fi
+
+  if [[ "$ahead" -ne 0 ]]; then
+    info "error: branch '$branch' of '$repo' has unpushed commits"
+    info "  info: push them first or omit --push"
+    exit 1
+  fi
+fi
+
 # Show the changes and ask for confirmation.
 #
 info "history identities: $identities_count ($mapped mapped)"
+
+if [[ "$push" ]]; then
+  info "push to:            $remote ${merge#refs/heads/}"
+fi
+
 info
 
 if [[ "$state" == "absent" ]]; then
@@ -667,4 +727,16 @@ if [[ "$commit" ]]; then
   run git -C "$repo" add -- .mailmap >&2
   run git -C "$repo" commit --quiet --only --file "$tmp_dir/message" \
     -- .mailmap >&2
+fi
+
+# Push the commit. If this fails (for example, because the upstream has moved
+# on), the commit stays and can be pushed once the branch is brought up to
+# date.
+#
+if [[ "$push" ]]; then
+  if ! run git -C "$repo" push --quiet "$remote" "HEAD:$merge" >&2; then
+    info "error: push to '$remote' failed"
+    info "  info: the .mailmap commit is kept in branch '$branch'"
+    exit 1
+  fi
 fi
