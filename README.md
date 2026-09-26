@@ -8,7 +8,12 @@ across every repository at once.
 ## Usage
 
 Each tool is a separate package with its own `README.md` in the package
-directory, which describes how to install and run it.
+directory, which describes how to install and run it:
+
+- [`mailmap`](mailmap/README.md): Contributor identity mapping for IW4x projects.
+- [`authors`](authors/README.md): Contributor list generation for IW4x projects.
+- [`headers`](headers/README.md): Source header maintenance for IW4x projects.
+- [`ignorerevs`](ignorerevs/README.md): Formatting commit tracking for IW4x projects.
 
 ## Development
 
