@@ -1,0 +1,214 @@
+// Copyright (c) the IW4x authors (see the AUTHORS file).
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+
+"\section=1"
+"\name=mailmap"
+"\summary=update git repository .mailmap from identity register"
+
+namespace mailmap
+{
+  {
+    "<options> <identities> <dir>",
+
+    "\h|SYNOPSIS|
+
+     \c{\b{mailmap} [<options>] <identities> [<dir>]}
+
+     \h|DESCRIPTION|
+
+     The \cb{mailmap} command updates the \cb{.mailmap} file of a git
+     repository so that it maps every identity (name and email) the
+     repository history carries to the preferred identity of the person it
+     belongs to, as recorded in the identity register <identities> (see
+     IDENTITY REGISTER below for details). The history
+     identities are the commit authors and the \cb{Co-authored-by} trailer
+     values.
+
+     If <dir> is specified, then it should be a directory inside the working
+     tree of the repository to update or, with \cb{--all}, the directory to
+     search for repositories. Otherwise, the current working directory is
+     assumed.
+
+     The \cb{.mailmap} is generated as a whole and replaces the existing one,
+     which means that changes to it belong in the identity register. It
+     contains an entry for each history identity that differs from the
+     preferred identity of its person, with the entries sorted, so the same
+     history and register always produce the same file. Before anything is
+     changed, git itself confirms that the generated \cb{.mailmap} maps every
+     history identity to its person (see \cb{git-check-mailmap(1)}).
+
+     The update then proceeds as follows:
+
+     \ol|
+
+     \li|Prepare every repository: generate its \cb{.mailmap} and establish
+     that it can be installed, committed, and, if requested, pushed. If any
+     repository fails to prepare, then nothing is changed in any of them.|
+
+     \li|Print the plan: for each repository whose \cb{.mailmap} is not up to
+     date, the number of history identities, where the commit is pushed to,
+     and the changes to the \cb{.mailmap}.|
+
+     \li|Ask for confirmation, unless \cb{--yes} is specified.|
+
+     \li|Install each \cb{.mailmap} with a single rename, then commit and,
+     if requested, push it.||
+
+     For example, to update and commit the \cb{.mailmap} of the repository
+     in the current working directory:
+
+     \
+     $ mailmap identities
+
+     repository:         /src/hello
+     history identities: 3 (3 mapped)
+
+     --- a/.mailmap
+     +++ b/.mailmap
+     @@ -1 +1,3 @@
+      # Generated from the identity register by mailmap.
+     +Jane Doe <jane@example.org> <jdoe@example.com>
+     +Jane Doe <jane@example.org> J. Doe <jane@old.example.org>
+
+     update '/src/hello/.mailmap'? [y/n]: y
+     \
+
+     The commit subject is \cb{Update .mailmap} and its message body lists the
+     entries the update adds and removes, for example:
+
+     \
+     Update .mailmap
+
+       add    Jane Doe <jane@example.org> <jdoe@example.com>
+       remove Jane Doe <jane@example.org> <jane@gone.example.org>
+     \
+
+     Note that the committer becomes one of the history identities and so the
+     identity register must attribute them for the next update to succeed.
+
+     To update, commit, and push the \cb{.mailmap} of every repository in the
+     \cb{org/} directory, confirming once for all of them:
+
+     \
+     $ mailmap --all --push identities org/
+     \
+
+     \h#identity-register|IDENTITY REGISTER|
+
+     The identity register is a manifest list (see
+     \l{bpkg#manifest-format Manifest Format}) with one manifest per person.
+     For example:
+
+     \
+     : 1
+     name: Jane Doe
+     email: jane@example.org
+     alias: J. Doe <jane@old.example.org>
+     alias: <jdoe@example.com>
+     :
+     name: John Roe
+     email: john@example.org
+     \
+
+     The \cb{name} and \cb{email} values specify the preferred identity of the
+     person and appear once. The \cb{alias} values specify the other
+     identities of the person and can appear any number of times. An alias in
+     the \c{\i{name} <\i{email}>} form matches the identity with this name and
+     email and an alias in the \c{<\i{email}>} form matches every identity
+     with this email. Any other value is an error.
+
+     An identity is matched the same way git applies a \cb{.mailmap} entry to
+     it: an alias with a name takes precedence and names and emails compare
+     case-insensitively. The register must attribute each identity to at most
+     one person, which holds if:
+
+     \ul|
+
+     \li|An email, preferred or aliased, belongs to one person.|
+
+     \li|A name at an email belongs to one person.|
+
+     \li|A name alias matches no other person's preferred identity.|
+
+     \li|An alias is not covered by its person's own emails.||
+
+     Note that the email alias of one person and the name alias of another may
+     refer to the same email. This is how two people who committed with a
+     shared email are told apart.
+
+     Every history identity must be attributed. The command fails if the
+     register does not attribute some of them, listing each one, for example:
+
+     \
+     error: history of '/src/hello' has identities not in 'identities'
+       info: Stranger <stranger@example.net>
+     \
+     "
+  }
+
+  class options
+  {
+    "\h|OPTIONS|"
+
+    bool --all|-a
+    {
+      "Operate on every repository found under \i{dir}. Without this option,
+       the repository \i{dir} is in is operated on. The search does not
+       descend into a repository working tree, so nested repositories
+       (submodules, repositories checked out inside another one) are never
+       visited. Linked worktrees are skipped as well, since their repository
+       is visited through its main working tree. Hidden directories are
+       searched."
+    };
+
+    bool --no-commit
+    {
+      "Don't commit the updated \cb{.mailmap}. By default, the \cb{.mailmap}
+       is committed and only it is, whatever else is staged."
+    };
+
+    bool --push
+    {
+      "Push the commit to the upstream of the current branch. To push exactly
+       this commit, the branch must not be ahead of its upstream before the
+       update. If the push fails, then the commit is kept and the rest of the
+       repositories are still updated."
+    };
+
+    bool --show-push
+    {
+      "Print the push command without executing it. This allows examining
+       the commit before pushing it. Note that the command is printed to
+       \cb{stdout}."
+    };
+
+    bool --print-only
+    {
+      "Print to \cb{stdout} what would be done without actually doing
+       anything."
+    };
+
+    bool --yes|-y
+    {
+      "Don't prompt for confirmation before updating the \cb{.mailmap}."
+    };
+
+    bool --help
+    {
+      "Print usage information and exit."
+    };
+
+    bool --version
+    {
+      "Print version and exit."
+    };
+  };
+
+  "
+  \h|EXIT STATUS|
+
+  Non-zero exit status is returned in case of an error, including when the
+  update is not confirmed. Nothing is changed in any repository if the error
+  is diagnosed before the confirmation.
+  "
+}

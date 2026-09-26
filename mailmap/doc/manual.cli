@@ -1,0 +1,371 @@
+// Copyright (c) the IW4x authors (see the AUTHORS file).
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+
+"\name=mailmap-manual"
+"\title=Manual"
+
+// NOTES
+//
+// - Maximum <pre> line is 70 characters.
+//
+
+"
+\h0#preface|Preface|
+
+This document describes \c{mailmap}, a tool for maintaining the
+\c{.mailmap} files of git repositories from an identity register. For the
+command line interface refer to the \l{mailmap(1)} man page.
+
+\h1#intro|Introduction|
+
+The \c{mailmap} tool maintains the \c{.mailmap} file of a git repository,
+which is the file git uses to map the names and emails recorded in the
+history to the ones their owners prefer. The mapping itself comes from a
+separate file, the identity register, that lists each person along with
+the identities they have committed under. A single register can be used
+with any number of repositories and this is the case \c{mailmap} was
+designed for.
+
+If you have maintained a \c{.mailmap} file by hand, then you are probably
+familiar with how it goes: someone commits from a freshly installed machine
+or with a new email, their commits start showing up under a new identity,
+and sooner or later somebody adds an entry for it. The more repositories a
+project has, the harder this becomes to keep up with. An entry gets added
+to one repository and forgotten in the next, and it becomes difficult to
+tell whether any given \c{.mailmap} is complete. For a project that relies
+on its history to establish who wrote what (for example, to generate its
+\c{AUTHORS} file), an incomplete \c{.mailmap} means incorrect attribution.
+
+With \c{mailmap} the \c{.mailmap} file is generated. We record the people
+and their identities once, in the register, and \c{mailmap} derives the
+\c{.mailmap} of each repository from the register and the history of that
+repository. If the history contains an identity that the register does not
+account for, then \c{mailmap} lists it and fails, which means a generated
+\c{.mailmap} is always complete. Before changing anything, \c{mailmap} also
+has git apply the generated file to every identity in the history and
+makes sure each one maps to the person the register says it belongs to.
+
+We begin with a walkthrough that updates the \c{.mailmap} of a single
+repository and then look at the identity register and at what \c{mailmap}
+does underneath in more detail.
+
+\h1#start|Getting Started|
+
+Let's start with a repository whose history has two identities for the
+same person. Jane made her first commit with the name \c{jane} and her
+second one from her old work email:
+
+\
+$ cd hello/
+$ git log --format='%an <%ae>'
+J. Doe <jane@old.example.org>
+jane <jane@example.org>
+\
+
+Git records the author of each commit as it was configured at the time and
+so, as far as git is concerned, these are two different people. To tell it
+that both identities are Jane's, we first record her in the identity
+register. Let's call this file \c{identities} and place it next to the
+repository:
+
+\
+$ cat ../identities
+: 1
+name: Jane Doe
+email: jane@example.org
+alias: J. Doe <jane@old.example.org>
+\
+
+The register is a manifest list with one manifest per person. The
+\c{name} and \c{email} values are Jane's preferred identity, the one we
+want git to show, and the \c{alias} value is another identity of hers. We
+will discuss the register format in more detail in \l{#register The
+Identity Register}.
+
+Now we can run \c{mailmap}, passing the path to the register:
+
+\
+$ mailmap ../identities
+
+repository:         /src/hello
+history identities: 2 (2 mapped)
+
++# Generated from the identity register by mailmap.
++Jane Doe <jane@example.org> <jane@example.org>
++Jane Doe <jane@example.org> J. Doe <jane@old.example.org>
+
+update '/src/hello/.mailmap'? [y/n]:
+\
+
+Let's go through this output. The first two lines tell us which repository
+is being updated and that both identities in its history belong to someone
+in the register. Next comes the change to the \c{.mailmap} file in the
+\c{diff(1)} notation, which in our case is the whole file since the
+repository did not have one.
+
+Each entry maps the identity on its right hand side to the preferred
+identity on its left hand side. The second entry is straightforward: it maps
+Jane's old identity, name and email, to the new one. Notice that the first
+entry has only an email on its right hand side. Such an entry applies to
+every name at this email and this is what takes care of the lowercase
+\c{jane}.
+
+Once we answer \c{y}, \c{mailmap} installs the new \c{.mailmap} and commits
+it, printing each command as it executes it. The commit message lists the
+entries that were added and removed:
+
+\
+$ git log -1 --format=%B
+Update .mailmap
+
+  add    Jane Doe <jane@example.org> <jane@example.org>
+  add    Jane Doe <jane@example.org> J. Doe <jane@old.example.org>
+\
+
+And if we now ask git to use the \c{.mailmap} file, it shows a single
+person:
+
+\
+$ git log --use-mailmap --format='%aN <%aE>' | sort -u
+Jane Doe <jane@example.org>
+\
+
+If we run \c{mailmap} again, it tells us that the \c{.mailmap} file is up
+to date and exits without changing anything:
+
+\
+$ mailmap ../identities
+'/src/hello/.mailmap' is up to date
+\
+
+\N|The commit made by \c{mailmap} is itself part of the history and its
+author has to be in the register for the next update to succeed. In this
+example we assume the repository is configured to commit as Jane Doe, who
+is already there.|
+
+If we also wanted to push the commit, then we would pass \c{--push}. And to
+see what \c{mailmap} would do without changing anything, there is
+\c{--print-only}, which prints the same plan to \c{stdout} and exits. See
+\l{mailmap(1)} for the complete list of options.
+
+\h1#register|The Identity Register|
+
+The identity register is the only place where people and their identities
+are recorded and everything \c{mailmap} writes to a \c{.mailmap} file comes
+from it. It is normally kept under version control and changes to it are
+reviewed the same way as changes to code.
+
+\h#register-format|Format|
+
+The register is a manifest list (see \l{bpkg#manifest-format Manifest
+Format} for details on the format) with one manifest per person. For
+example:
+
+\
+: 1
+name: Jane Doe
+email: jane@example.org
+alias: J. Doe <jane@old.example.org>
+alias: <jdoe@example.com>
+:
+name: John Roe
+email: john@example.org
+\
+
+The \c{name} and \c{email} values specify the person's preferred identity,
+which is the identity the \c{.mailmap} entries map to. Both values are
+required and each can only appear once.
+
+The \c{alias} values specify the person's other identities. There can be
+any number of them and each is either a name followed by an email in angle
+brackets or an email in angle brackets alone. The first form is the
+identity with this exact name and email. The second form is every identity
+with this email whatever its name. In the above example, the second alias
+covers any name Jane may have committed under with her
+\c{jdoe@example.com} email.
+
+Any other manifest value is an error.
+
+\h#register-matching|Matching|
+
+To find the person an identity belongs to, \c{mailmap} follows the same
+precedence git uses when applying a \c{.mailmap} file. First it looks for
+an alias with this name and email. If there is none, then it looks for a
+person with this email, either as the preferred email or as an email
+alias. In both cases names and emails are compared case-insensitively. So,
+for example, \c{jane <JANE@example.org>} belongs to Jane because of her
+preferred email.
+
+The name and email lookup taking precedence is what allows telling apart
+two people who have committed with the same email. For example, if John
+and Rick have both used a shared \c{build@example.org} email:
+
+\
+: 1
+name: John Roe
+email: john@example.org
+alias: John <build@example.org>
+:
+name: Rick Poe
+email: rick@example.org
+alias: <build@example.org>
+\
+
+Here \c{John <build@example.org>} belongs to John while any other name at
+\c{build@example.org} belongs to Rick.
+
+\h#register-rules|Rules|
+
+For the generated \c{.mailmap} to be unambiguous, each identity must belong
+to at most one person. To guarantee this, the register must satisfy the
+following rules and \c{mailmap} refuses to use a register that does not:
+
+\ul|
+
+\li|An email, preferred or alias, belongs to a single person.|
+
+\li|An alias with a name and email belongs to a single person.|
+
+\li|An alias with a name and email does not match another person's
+preferred identity. Since such an alias is looked up first, it would take
+that person's commits away from them.|
+
+\li|An alias is not already covered by the person's own emails. For
+example, the \c{Jane <jane@example.org>} alias adds nothing to the
+\c{jane@example.org} preferred email.||
+
+The diagnostics for each rule names the people involved. For example:
+
+\
+error: email 'j@example.io' belongs to multiple people in 'identities'
+  info: 'Jane Doe' and 'John Roe'
+\
+
+Similarly, every identity in the history of a repository must belong to
+someone. If some do not, then \c{mailmap} lists them and changes nothing:
+
+\
+error: history of '/src/hello' has identities not in 'identities'
+  info: Stranger <stranger@example.net>
+\
+
+\h1#architecture|How mailmap Works|
+
+In this chapter we look at how \c{mailmap} derives the \c{.mailmap} file
+from the register and the history, how it makes sure the result is
+correct, and in what order it changes things.
+
+\h#architecture-identities|History Identities|
+
+The identities of a repository are the commit authors along with the
+\c{Co-authored-by} trailer values in the history of \c{HEAD}. They are read
+as recorded, without applying the existing \c{.mailmap}, and so the
+existing file has no effect on the one that replaces it. If a
+\c{Co-authored-by} value is not a valid identity, then \c{mailmap} issues a
+warning and skips it since git would not be able to map it either.
+
+\h#architecture-entries|Entries|
+
+For each history identity \c{mailmap} finds the person it belongs to and
+then the entry that maps it. If the identity was matched with a name and
+email alias, then the entry maps this exact name and email and git applies
+it to nothing else:
+
+\
+Jane Doe <jane@example.org> J. Doe <jane@old.example.org>
+\
+
+If the identity was matched with an email, preferred or alias, then the
+entry maps the email alone and git applies it to every name at this email:
+
+\
+Jane Doe <jane@example.org> <jdoe@example.com>
+\
+
+In this case the email is written as it appears in the register. The
+preferred identity itself does not need an entry and none is written for
+it.
+
+The file starts with a comment that says where it comes from, followed by
+the entries without duplicates and sorted bytewise. As a result, the same
+history and register always produce the same file, byte for byte, and a
+\c{.mailmap} that is up to date is left alone.
+
+\h#architecture-proof|Proof|
+
+The entries are derived by rules that are meant to match git's own, and to
+make sure they do, \c{mailmap} asks git. Before changing anything, it
+creates an empty repository that reads no global or system configuration,
+places the generated file there, and passes every attributed history
+identity to \c{git-check-mailmap(1)}. Each identity must map to the
+preferred identity of the person the register attributes it to. If one
+does not, then there is a bug in \c{mailmap} and it fails without changing
+anything.
+
+\h#architecture-phases|Phases|
+
+An update proceeds in three phases. In the first phase \c{mailmap} prepares
+every repository. This includes generating and proving the \c{.mailmap} file
+as well as making sure the update can be installed, committed, and, if
+requested, pushed. Specifically, the existing \c{.mailmap} must have no
+uncommitted changes (since they would be lost), and the committer identity
+must be configured (unless \c{--no-commit} is specified). For a push, as
+well as with \c{--show-push}, the branch must also have an upstream and
+must not be ahead of it (we will come back to this in a moment). If any
+repository fails to prepare, then nothing is changed in any of them.
+
+In the second phase \c{mailmap} prints the plan and asks for confirmation,
+once for all the repositories. With \c{--print-only} the plan is printed to
+\c{stdout} and \c{mailmap} stops at this point.
+
+In the last phase \c{mailmap} installs each \c{.mailmap} by renaming a
+complete temporary file over it, so the file is never observed partially
+written. It then commits the file, and only this file, whatever else
+happens to be staged. Finally, if requested, it pushes the commit to the
+upstream of the current branch, explicitly and regardless of the
+\c{push.default} setting. With \c{--show-push} the push command is printed
+for us to examine the commit and run it ourselves.
+
+The reason the branch must not be ahead of its upstream is that git pushes
+every commit the upstream does not have. With the branch level with its
+upstream, the push only carries the \c{.mailmap} commit. If the push fails,
+for example, because the upstream has moved on in the meantime, then the
+commit is kept and can be pushed once the branch is brought up to date.
+
+\h1#all|Updating Many Repositories|
+
+With \c{--all}, \c{mailmap} operates on every repository it finds under a
+directory. For example, if we have cloned all the repositories of an
+organization into \c{org/}:
+
+\
+$ mailmap --all --push identities org/
+\
+
+The search does not descend into a repository's working tree and so
+repositories nested in it, such as submodules, are not visited. Subtrees
+are part of the working tree of their repository and are not visited
+either. Hidden directories are searched since a repository can itself be
+hidden (\c{.github} is a common example). Linked worktrees are skipped with
+a warning since their repository is visited through its main working tree.
+
+The phases described in the previous chapter apply to all the repositories
+together. In particular, every repository is prepared before any of them
+is changed, which means that a single run reports the problems in all of
+them and that a problem in one leaves all of them unchanged:
+
+\
+error: history of '/src/org/hello' has identities not in 'identities'
+  info: Stranger <stranger@example.net>
+error: 1 of 19 repositories failed, nothing changed
+\
+
+This also makes \c{--all --print-only} a convenient way to build up the
+register for a new set of repositories: we run it, add the identities it
+lists, and repeat until it prints the plan.
+
+Once the update is confirmed, a failure to push one repository does not
+prevent the remaining repositories from being updated and pushed. Such a
+failure is diagnosed as it happens and \c{mailmap} exits with a non-zero
+status once all the repositories are processed.
+"

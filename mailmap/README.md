@@ -64,5 +64,6 @@ All the repositories are prepared before any of them is changed, so a problem
 in one leaves them all unchanged. Repositories inside another repository's
 working tree, such as submodules, are not visited.
 
-The comments at the beginning of the `mailmap` script describe the register
-rules and the options.
+The `mailmap(1)` man page describes the options and the register rules, and
+the `mailmap` manual describes the register and how `mailmap` works. Both are
+installed with the package.
