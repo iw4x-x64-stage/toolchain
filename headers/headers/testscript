@@ -1,0 +1,22 @@
+# Copyright (c) the IW4x authors (see the AUTHORS file).
+# SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+
+: help
+:
+$* --help 2>>~%EOE%
+  %usage: .+headers \[<options>\] \[<dir>\]%
+  EOE
+
+: version
+:
+$* --version >~'/headers \d+\.\d+\.\d+.*/'
+
+: none
+:
+$* 2>>~%EOE% != 0
+  %error: usage: .+headers \[<options>\] \[<dir>\]%
+  EOE
+
+: unknown-option
+:
+$* --frobnicate 2>'error: unknown option: --frobnicate' != 0

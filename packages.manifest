@@ -2,3 +2,5 @@
 location: mailmap/
 :
 location: authors/
+:
+location: headers/

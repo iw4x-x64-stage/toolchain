@@ -1,0 +1,3 @@
+import mods = libbutl.bash%bash{manifest-parser}
+
+./: exe{headers}: in{headers} $mods testscript
