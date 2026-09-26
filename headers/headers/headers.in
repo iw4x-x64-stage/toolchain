@@ -5,6 +5,88 @@
 
 # Add the SPDX header to the source files of git repositories.
 #
+# Every source file starts with a header that names the copyright holder and
+# the license of the file, written in the comment syntax of the file type:
+#
+#  // Copyright (c) the IW4x authors (see the AUTHORS file).
+#  // SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+#
+# The license expression comes from the license value of the repository
+# manifest or, in a multi-package repository, of its package manifests, which
+# must agree. The IW4x license (other: GPL-3.0-only with IW4x Linking
+# Exception 1.1) is written as the expression above and an SPDX license
+# expression is written as is.
+#
+# Every file git tracks is either a source file, which must have the header,
+# or a file that cannot or need not carry one (a binary, an image, a license
+# text, documentation, and so on). A file of a type that is neither is an
+# error, so that no source file goes unnoticed. Symbolic links and submodules
+# are skipped. A file with the spdx attribute unset (for example, with
+# 'deps/** -spdx' in .gitattributes) is excluded, which is how third-party
+# and generated files are kept out.
+#
+# The header is written into a file only if it carries no notice at all. A
+# file whose leading comment already mentions a copyright or license is
+# listed for review, since its notice may be someone else's: it is either
+# excluded or given the header by hand, next to its notice, which is then
+# accepted. Notices are never removed or rewritten and a file whose header
+# is incomplete or names a different license expression is an error.
+#
+# The header goes at the beginning of the file, after the byte order mark,
+# the shebang line, and, in XML and HTML, the XML declaration and the
+# document type declaration. It is followed by an empty line and is written
+# with the line endings of the file.
+#
+# Options:
+#
+# --all|-a
+#
+#   Operate on every repository found under <dir> instead of the one it is in.
+#   The search does not descend into a repository working tree, so nested
+#   repositories (submodules, repositories checked out inside another one) are
+#   never visited. Linked worktrees are skipped as well, since their
+#   repository is visited through its main working tree.
+#
+#   All the repositories are prepared before any of them is changed, so a
+#   failure in one leaves them all unchanged, and the changes are confirmed
+#   once for all of them. A failure to push one of them does not prevent
+#   pushing the rest.
+#
+# --license <expression>
+#
+#   Use the SPDX license expression for the headers of every repository
+#   operated on. This is necessary for a repository without a manifest.
+#
+# --no-commit
+#
+#   Don't commit the files the headers are added to. By default, they are
+#   committed and only they are, whatever else is staged.
+#
+# --push
+#
+#   Push the commit to the upstream of the current branch. To push exactly
+#   this commit, the branch must not be ahead of its upstream before the
+#   update.
+#
+# --show-push
+#
+#   Print the push command instead of executing it. This allows examining the
+#   commit before pushing it. Note that the command is printed to stdout.
+#
+# --print-only
+#
+#   Print to stdout what would be done without actually doing anything.
+#
+# --yes|-y
+#
+#   Don't prompt for confirmation before adding the headers.
+#
+# Arguments:
+#
+# <dir>  A directory in the repository working tree or, with --all, the
+#        directory to search for repositories. If not specified, the current
+#        directory is assumed.
+#
 usage="usage: $0 [<options>] [<dir>]"
 
 owd="$(pwd)"
@@ -13,18 +95,83 @@ set -o errtrace     # Trap in functions and subshells.
 set -o pipefail     # Fail if any pipeline command fails.
 shopt -s lastpipe   # Execute last pipeline command in the current shell.
 
+@import libbutl.bash/manifest-parser@
+
 function info () { echo "$*" 1>&2; }
 function error () { info "error: $*"; exit 1; }
+
+# Trace and run a command, making git diagnostics distinguishable from
+# ours.
+#
+function run () # <cmd> <arg>...
+{
+  info "+ $*"
+  "$@"
+}
+
+all=
+license=
+commit=true
+push=
+show_push=
+print_only=
+yes=
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     -h|--help)
       info "$usage"
+      info
+      info "Options:"
+      info "  --all|-a         Operate on every repository found under <dir>."
+      info "  --license <expr> Use the license expression for the headers."
+      info "  --no-commit      Don't commit the changed files."
+      info "  --push           Push the commit to the upstream."
+      info "  --show-push      Print the push command instead of executing it."
+      info "  --print-only     Only print what would be done."
+      info "  --yes|-y         Don't prompt for confirmation before adding."
+      info "  --version        Print version and exit."
+      info
+      info "See the comments at the beginning of $0 for details."
       exit 0
       ;;
     --version)
       echo "headers @version@"
       exit 0
+      ;;
+    -a|--all)
+      all=true
+      shift
+      ;;
+    --license)
+      shift
+
+      if [[ "$#" -eq 0 || -z "$1" ]]; then
+        error "license expression expected after --license"
+      fi
+
+      license="$1"
+      shift
+      ;;
+    --no-commit)
+      commit=
+      shift
+      ;;
+    --push)
+      push=true
+      shift
+      ;;
+    --show-push)
+      show_push=true
+      shift
+      ;;
+    --print-only)
+      print_only=true
+      shift
+      ;;
+    -y|--yes)
+      yes=true
+      shift
       ;;
     # Catch invalid options.
     #
@@ -39,4 +186,991 @@ while [[ "$#" -gt 0 ]]; do
   esac
 done
 
-error "$usage"
+if [[ "$#" -gt 1 ]]; then
+  error "$usage"
+fi
+
+if [[ "$push" && "$show_push" ]]; then
+  error "both --push and --show-push specified"
+fi
+
+if [[ ! "$commit" ]]; then
+  if [[ "$push" ]]; then
+    error "--push specified with --no-commit"
+  fi
+
+  if [[ "$show_push" ]]; then
+    error "--show-push specified with --no-commit"
+  fi
+fi
+
+dir="${1:-$owd}"
+dir="${dir%/}"
+
+if [[ ! -d "$dir" ]]; then
+  error "'$dir' does not exist or is not a directory"
+fi
+
+if ! command -v git >/dev/null; then
+  error "unable to execute git: command not found"
+fi
+
+# Make sure that git commands fail instead of prompting for
+# authentication and don't run maintenance tasks or start daemons.
+#
+# Note that we keep the credential helpers, since that is how an HTTPS
+# push authenticates without a prompt.
+#
+export GIT_TERMINAL_PROMPT=0
+
+val="\
+'maintenance.autoDetach=false' \
+'gc.autoDetach=false' \
+'core.fsmonitor=false'"
+
+if [[ -n "$GIT_CONFIG_PARAMETERS" ]]; then
+  val="$val $GIT_CONFIG_PARAMETERS"
+fi
+
+export GIT_CONFIG_PARAMETERS="$val"
+
+# The copyright line of the header. The license line names the expression
+# of the repository.
+#
+holder="Copyright (c) the IW4x authors (see the AUTHORS file)."
+
+# Print the comment style of the file, which is one of:
+#
+#   slash  // comment
+#   hash   # comment
+#   dash   -- comment
+#   block  /* comment */
+#   xml    <!-- comment -->
+#   roff   .\" comment
+#   rem    rem comment
+#
+# Or print 'none' if the file cannot or need not carry the header and
+# 'unknown' if its type is not known.
+#
+# A template (.in) has the type of the file it produces and a file of
+# otherwise unknown type with a shebang line is a script.
+#
+function file_style () # <path>
+{
+  local f="$1"
+  local b="${f##*/}"
+
+  if [[ "$b" == *.in ]]; then
+    local s
+    s="$(file_style "${f%.in}")"
+
+    if [[ "$s" != "unknown" ]]; then
+      echo "$s"
+      return 0
+    fi
+  else
+    case "$b" in
+      buildfile|testscript|Makefile|makefile|GNUmakefile|CMakeLists.txt|\
+Dockerfile|.htaccess|htaccess)
+        echo hash
+        return 0
+        ;;
+      README|README.*|NEWS|AUTHORS|LEGAL|LICENSE|LICENSE.*|LICENSE-*|\
+COPYING|COPYING.*|CHANGELOG|CHANGELOG.*|manifest|packages.manifest|\
+repositories.manifest|LINGUAS|POTFILES|.gitignore|.gitattributes|\
+.gitmodules|.editorconfig|.mailmap|.clang-format|.clang-tidy)
+        echo none
+        return 0
+        ;;
+    esac
+
+    local e="${b##*.}"
+
+    if [[ "$e" != "$b" ]]; then
+      case "${e,,}" in
+        c|h|cc|hh|cxx|hxx|cpp|hpp|c++|h++|ixx|txx|ipp|tpp|mxx|mpp|inl|cli|\
+proto|rc|js|mjs|ts|cs|java|go|rs|swift|kt)
+          echo slash
+          return 0
+          ;;
+        sh|bash|py|pl|rb|build|testscript|cmake|mk|yml|yaml|toml|ps1|po)
+          echo hash
+          return 0
+          ;;
+        lua|sql)
+          echo dash
+          return 0
+          ;;
+        css|scss|less)
+          echo block
+          return 0
+          ;;
+        html|htm|xhtml|xml|xsd|xsl|xslt|its|loc)
+          echo xml
+          return 0
+          ;;
+        [1-9])
+          echo roff
+          return 0
+          ;;
+        bat|cmd)
+          echo rem
+          return 0
+          ;;
+        md|txt|json|lock|png|jpg|jpeg|gif|ico|webp|bmp|tga|dds|svg|iwi|\
+woff|woff2|ttf|otf|eot|exe|dll|lib|a|so|dylib|pdb|obj|o|zip|gz|xz|bz2|\
+7z|tar|wav|mp3|ogg|flac|pdf|bin|ff|iwd)
+          echo none
+          return 0
+          ;;
+      esac
+    fi
+  fi
+
+  if [[ -f "$f" ]] && IFS= read -r l <"$f" && [[ "$l" == "#!"* ]]; then
+    echo hash
+    return 0
+  fi
+
+  echo unknown
+}
+
+# Inspect the header of the file written in the comment style and print
+# its state, which is one of:
+#
+#   headed   It has the header, with the expression.
+#   missing  It has no notice at all.
+#   notice   Its leading comment mentions a copyright or license.
+#   holder   It has the license line but not the copyright line.
+#   spdx     It has the copyright line but not the license line.
+#   other    Its license line names another expression, which follows,
+#            separated with a space.
+#
+# The leading comment consists of the comment lines (and blank lines) at the
+# beginning of the file, after the prologue that the header goes after.
+#
+function inspect () # <path> <style> <expression>
+{
+  LC_ALL=C awk -v style="$2" -v expr="$3" -v holder="$holder" '
+  function trim (s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+
+  BEGIN {
+    lc = ""; bo = ""; bc = ""
+    if      (style == "slash") { lc = "//"; bo = "/*"; bc = "*/" }
+    else if (style == "hash")  { lc = "#" }
+    else if (style == "dash")  { lc = "--"; bo = "--[["; bc = "]]" }
+    else if (style == "block") { bo = "/*"; bc = "*/" }
+    else if (style == "xml")   { bo = "<!--"; bc = "-->" }
+    else if (style == "roff")  { lc = ".\\\"" }
+
+    lead = 1; prologue = 1; open = 0; notice = 0; copyright = 0; spdx = ""
+  }
+
+  {
+    l = $0
+    sub(/\r$/, "", l)
+
+    if (NR == 1)
+      sub(/^\357\273\277/, "", l)
+
+    if (index(l, holder))
+      copyright = 1
+
+    if (spdx == "" && (i = index(l, "SPDX-License-Identifier:"))) {
+      s = substr(l, i + 24)
+      sub(/(\*\/|-->)[ \t]*$/, "", s)
+      spdx = trim(s)
+      if (spdx == "") spdx = "-"
+    }
+
+    if (!lead)
+      next
+
+    t = trim(l)
+
+    if (prologue) {
+      if (NR == 1 && t ~ /^#!/)
+        next
+
+      if (style == "xml" && (t ~ /^<\?xml/ || toupper(t) ~ /^<!DOCTYPE/))
+        next
+
+      prologue = 0
+    }
+
+    if (t == "")
+      next
+
+    comment = 0
+
+    if (open) {
+      comment = 1
+      if (index(t, bc)) open = 0
+    } else if (bo != "" && index(t, bo) == 1) {
+      comment = 1
+      if (!index(substr(t, length(bo) + 1), bc)) open = 1
+    } else if (lc != "" && index(t, lc) == 1) {
+      comment = 1
+    } else if (style == "rem" && (tolower(t) ~ /^rem([ \t]|$)/ || t ~ /^::/)) {
+      comment = 1
+    }
+
+    if (!comment) {
+      lead = 0
+      next
+    }
+
+    if (!index(l, holder) && !index(l, "SPDX-License-Identifier:") &&
+        tolower(l) ~ /copyright|\(c\)|licen[cs]e|spdx/)
+      notice = 1
+  }
+
+  END {
+    if (spdx != "") {
+      if (spdx != expr)   print "other " spdx
+      else if (!copyright) print "holder"
+      else                 print "headed"
+    }
+    else if (copyright) print "spdx"
+    else if (notice)    print "notice"
+    else                print "missing"
+  }' "$1"
+}
+
+# Write the file with the header added into the output file, preserving the
+# byte order mark, the line endings, and the absence of the final newline.
+# The header is separated from the rest of the file with an empty line.
+#
+function add_header () # <path> <style> <expression> <output>
+{
+  local nl=true
+  if [[ -s "$1" && "$(tail -c 1 "$1" | od -An -c | tr -d ' ')" != '\n' ]]; then
+    nl=
+  fi
+
+  LC_ALL=C awk -v style="$2" -v expr="$3" -v holder="$holder" -v nl="$nl" '
+  function comment (s)
+  {
+    if (style == "slash") return "// " s
+    if (style == "hash")  return "# " s
+    if (style == "dash")  return "-- " s
+    if (style == "block") return "/* " s " */"
+    if (style == "xml")   return "<!-- " s " -->"
+    if (style == "roff")  return ".\\\" " s
+    if (style == "rem")   return "rem " s
+  }
+
+  {
+    l = $0
+
+    if (NR == 1) {
+      crlf = (l ~ /\r$/)
+      if (sub(/^\357\273\277/, "", l)) bom = 1
+    }
+
+    sub(/\r$/, "", l)
+    ls[++n] = l
+  }
+
+  END {
+    eol = crlf ? "\r\n" : "\n"
+
+    # An empty line is output in roff, so separate with an empty comment.
+    #
+    sep = (style == "roff" ? ".\\\"" : "")
+
+    if (bom)
+      printf "\357\273\277"
+
+    i = 1
+    p = 0
+
+    if (n >= 1 && ls[1] ~ /^#!/) {
+      printf "%s%s", ls[1], eol
+      i = 2
+      p = 1
+    }
+
+    if (style == "xml") {
+      while (i <= n && (ls[i] ~ /^[ \t]*<\?xml/ ||
+                        toupper(ls[i]) ~ /^[ \t]*<!DOCTYPE/)) {
+        printf "%s%s", ls[i], eol
+        i++
+        p = 1
+      }
+    }
+
+    if (p)
+      printf "%s%s", sep, eol
+
+    printf "%s%s", comment(holder), eol
+    printf "%s", comment("SPDX-License-Identifier: " expr)
+
+    while (i <= n && ls[i] ~ /^[ \t]*$/)
+      i++
+
+    if (i > n) {
+      printf "%s", eol
+      exit
+    }
+
+    printf "%s%s%s", eol, sep, eol
+
+    for (; i < n; i++)
+      printf "%s%s", ls[i], eol
+
+    printf "%s%s", ls[n], (nl ? eol : "")
+  }' "$1" >"$4"
+}
+
+# Print the license expression the license value of a manifest stands for.
+# Return 1 if it stands for none.
+#
+# The value is a license name in the SPDX scheme (an SPDX license
+# expression) or in the other scheme, whose names compare
+# case-insensitively, optionally followed by a comment. Of the other scheme
+# only the IW4x license has an expression. A comma-separated list of names,
+# which means that all of them apply, has none either. The deprecated
+# scheme-less aliases stand for their SPDX names.
+#
+function license_expression () # <value>
+{
+  local v="$1"
+
+  # Strip the comment.
+  #
+  v="${v%%;*}"
+  v="${v%"${v##*[![:space:]]}"}"
+
+  case "${v,,}" in
+    "other: gpl-3.0-only with iw4x linking exception 1.1")
+      echo "GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1"
+      return 0
+      ;;
+    other:*|*,*|""|"public domain"|"available source"|proprietary|todo)
+      return 1
+      ;;
+  esac
+
+  case "$v" in
+    BSD2)     echo "BSD-2-Clause"   ;;
+    BSD3)     echo "BSD-3-Clause"   ;;
+    BSD4)     echo "BSD-4-Clause"   ;;
+    GPLv2)    echo "GPL-2.0-only"   ;;
+    GPLv3)    echo "GPL-3.0-only"   ;;
+    LGPLv2)   echo "LGPL-2.0-only"  ;;
+    LGPLv2.1) echo "LGPL-2.1-only"  ;;
+    LGPLv3)   echo "LGPL-3.0-only"  ;;
+    AGPLv3)   echo "AGPL-3.0-only"  ;;
+    ASLv1)    echo "Apache-1.0"     ;;
+    ASLv1.1)  echo "Apache-1.1"     ;;
+    ASLv2)    echo "Apache-2.0"     ;;
+    MPLv2)    echo "MPL-2.0"        ;;
+    *)        echo "$v"             ;;
+  esac
+}
+
+# Print the values of the name in the manifest file, one per line. If the
+# file is a manifest list, then the values of every manifest in it are
+# printed.
+#
+function manifest_values () # <file> <name>
+{
+  local n v
+
+  butl_manifest_parser_start "$1"
+
+  while IFS=: read -ru "$butl_manifest_parser_ofd" -d '' n v; do
+    if [[ "$n" == "$2" ]]; then
+      echo "$v"
+    fi
+  done
+
+  butl_manifest_parser_finish
+}
+
+# The repositories.
+#
+# The repositories are indexed in the order they are found. Each has its
+# own subdirectory of the temporary directory named after its index, which
+# holds the list of files to add the header to (files) and their styles
+# (styles).
+#
+repos=()
+
+repo_failed=()     # Preparing or updating the repository failed.
+repo_license=()    # License expression.
+repo_sources=()    # Number of source files.
+repo_headed=()     # Number of source files that have the header.
+repo_excluded=()   # Number of files excluded with the spdx attribute.
+repo_missing=()    # Number of source files the header is to be added to.
+repo_branch=()     # Branch, remote, and upstream branch to push to.
+repo_remote=()
+repo_merge=()
+
+# Report the error for the repository and mark it as failed. Each
+# argument after the first is printed as an info line.
+#
+function repo_error () # <index> <text> [<info>...]
+{
+  local i="$1"
+
+  info "error: $2"
+  shift 2
+
+  local s
+  for s in "$@"; do
+    info "  info: $s"
+  done
+
+  repo_failed[$i]=true
+}
+
+# Add the repository working tree roots found under the directory to
+# repos. Do not descend into a working tree and skip linked worktrees.
+#
+# Note that a working tree root carries .git, which is a directory or,
+# for a linked worktree or a submodule, a file.
+#
+function find_repositories () # <dir>
+{
+  local d="$1"
+
+  if [[ -e "$d/.git" ]]; then
+    local t
+    if t="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" &&
+       [[ "$t" == "$(realpath "$d")" ]]; then
+
+      local g c
+      g="$(git -C "$d" rev-parse --absolute-git-dir)"
+      c="$(git -C "$d" rev-parse --path-format=absolute --git-common-dir)"
+
+      if [[ "$g" == "$c" ]]; then
+        repos+=("$t")
+      else
+        info "warning: skipping linked worktree '$t'"
+      fi
+
+      return 0
+    fi
+  fi
+
+  # Note that hidden directories are searched as well, since a
+  # repository can be one (for example, .github).
+  #
+  local s
+  for s in "$d"/* "$d"/.[!.]* "$d"/..?*; do
+    if [[ -d "$s" && ! -L "$s" && "$(basename "$s")" != ".git" ]]; then
+      find_repositories "$s"
+    fi
+  done
+}
+
+# Add the repository working tree roots found under the directory to
+# repos. Do not descend into a working tree and skip linked worktrees.
+#
+# Note that a working tree root carries .git, which is a directory or,
+# for a linked worktree or a submodule, a file.
+#
+function find_repositories () # <dir>
+{
+  local d="$1"
+
+  if [[ -e "$d/.git" ]]; then
+    local t
+    if t="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" &&
+       [[ "$t" == "$(realpath "$d")" ]]; then
+
+      local g c
+      g="$(git -C "$d" rev-parse --absolute-git-dir)"
+      c="$(git -C "$d" rev-parse --path-format=absolute --git-common-dir)"
+
+      if [[ "$g" == "$c" ]]; then
+        repos+=("$t")
+      else
+        info "warning: skipping linked worktree '$t'"
+      fi
+
+      return 0
+    fi
+  fi
+
+  # Note that hidden directories are searched as well, since a
+  # repository can be one (for example, .github).
+  #
+  local s
+  for s in "$d"/* "$d"/.[!.]* "$d"/..?*; do
+    if [[ -d "$s" && ! -L "$s" && "$(basename "$s")" != ".git" ]]; then
+      find_repositories "$s"
+    fi
+  done
+}
+
+# Establish the license expression of the repository. Mark the repository
+# as failed if it cannot be established.
+#
+function establish_license () # <index>
+{
+  local i="$1"
+  local r="${repos[$i]}"
+
+  if [[ -n "$license" ]]; then
+    repo_license[$i]="$license"
+    return 0
+  fi
+
+  local ms=()
+  if [[ -f "$r/manifest" ]]; then
+    ms=("$r/manifest")
+  elif [[ -f "$r/packages.manifest" ]]; then
+    local l ls=()
+    manifest_values "$r/packages.manifest" location | readarray -t ls
+    for l in "${ls[@]}"; do
+      ms+=("$r/${l%/}/manifest")
+    done
+  fi
+
+  if [[ "${#ms[@]}" -eq 0 ]]; then
+    repo_error "$i" "no manifest in '$r' to take the license from" \
+      "specify the license expression with --license"
+    return 0
+  fi
+
+  local m v e x
+  for m in "${ms[@]}"; do
+    if [[ ! -f "$m" ]]; then
+      repo_error "$i" "'$m' does not exist"
+      return 0
+    fi
+
+    local vs=()
+    manifest_values "$m" license | readarray -t vs
+
+    # Multiple license values mean that any of the licenses applies, which
+    # leaves the choice to the user of the package.
+    #
+    if [[ "${#vs[@]}" -eq 0 ]]; then
+      repo_error "$i" "'$m' has no license value" \
+        "specify the license expression with --license"
+      return 0
+    fi
+
+    if [[ "${#vs[@]}" -gt 1 ]]; then
+      repo_error "$i" "'$m' has multiple license values" \
+        "specify the license expression with --license"
+      return 0
+    fi
+
+    if ! e="$(license_expression "${vs[0]}")"; then
+      repo_error "$i" "no license expression for the license of '$m'" \
+        "specify the license expression with --license"
+      return 0
+    fi
+
+    if [[ -n "$x" && "$e" != "$x" ]]; then
+      repo_error "$i" "package manifests of '$r' have different licenses" \
+        "$x" "$e" "specify the license expression with --license"
+      return 0
+    fi
+
+    x="$e"
+  done
+
+  repo_license[$i]="$x"
+}
+
+# Inspect the files of the repository and record the ones to add the
+# header to. Mark the repository as failed if any file is of an unknown
+# type or is to be reviewed, or if its header is wrong.
+#
+function inspect_files () # <index>
+{
+  local i="$1"
+  local r="${repos[$i]}"
+  local d="$tmp_dir/$i"
+  local x="${repo_license[$i]}"
+
+  # List the regular files git tracks, which skips symbolic links and
+  # submodules, and establish their spdx attribute.
+  #
+  local fs=() e
+  git -C "$r" ls-files --stage -z | while IFS= read -r -d '' e; do
+    if [[ "$e" == 100* ]]; then
+      fs+=("${e#*$'\t'}")
+    fi
+  done
+
+  declare -A excluded=()
+
+  if [[ "${#fs[@]}" -ne 0 ]]; then
+    local as=()
+    printf '%s\0' "${fs[@]}" |
+      git -C "$r" check-attr -z --stdin spdx | readarray -d '' -t as
+
+    local j
+    for ((j = 0; j < "${#as[@]}"; j += 3)); do
+      if [[ "${as[$((j + 2))]}" == "unset" ]]; then
+        excluded["${as[$j]}"]=true
+      fi
+    done
+  fi
+
+  local us=() # Of unknown type.
+  local ns=() # With a notice.
+  local ws=() # With a wrong header.
+  local ms=() # Missing the header.
+  local ss=() # Their styles.
+
+  local f s st sources=0 headed=0
+  for f in "${fs[@]}"; do
+    if [[ -n "${excluded[$f]}" || ! -f "$r/$f" ]]; then
+      continue
+    fi
+
+    s="$(file_style "$r/$f")"
+
+    case "$s" in
+      none)
+        continue
+        ;;
+      unknown)
+        us+=("$f")
+        continue
+        ;;
+    esac
+
+    sources=$((sources + 1))
+    st="$(inspect "$r/$f" "$s" "$x")"
+
+    case "$st" in
+      headed)  headed=$((headed + 1))         ;;
+      missing) ms+=("$f"); ss+=("$s")         ;;
+      notice)  ns+=("$f")                     ;;
+      holder)  ws+=("$f: no copyright line")  ;;
+      spdx)    ws+=("$f: no SPDX-License-Identifier line") ;;
+      other\ *) ws+=("$f: license '${st#other }', expected '$x'") ;;
+    esac
+  done
+
+  repo_sources[$i]="$sources"
+  repo_headed[$i]="$headed"
+  repo_excluded[$i]="${#excluded[@]}"
+  repo_missing[$i]="${#ms[@]}"
+
+  if [[ "${#us[@]}" -ne 0 ]]; then
+    repo_error "$i" "files of unknown type in '$r'" "${us[@]}" \
+      "exclude them with -spdx in .gitattributes"
+  fi
+
+  if [[ "${#ns[@]}" -ne 0 ]]; then
+    repo_error "$i" "files in '$r' carry notices of their own" "${ns[@]}" \
+      "exclude third-party files with -spdx in .gitattributes" \
+      "or add the header next to the notice by hand"
+  fi
+
+  if [[ "${#ws[@]}" -ne 0 ]]; then
+    repo_error "$i" "files in '$r' have a wrong header" "${ws[@]}"
+  fi
+
+  if [[ "${#ms[@]}" -ne 0 ]]; then
+    printf '%s\0' "${ms[@]}" >"$d/files"
+    printf '%s\n' "${ss[@]}" >"$d/styles"
+  fi
+}
+
+# Inspect the repository and, if headers are to be added, establish that
+# the files can be changed, committed, and pushed. Mark the repository as
+# failed if any of this fails.
+#
+function prepare () # <index>
+{
+  local i="$1"
+  local r="${repos[$i]}"
+
+  mkdir "$tmp_dir/$i"
+
+  establish_license "$i"
+
+  if [[ "${repo_failed[$i]}" ]]; then
+    return 0
+  fi
+
+  inspect_files "$i"
+
+  if [[ "${repo_failed[$i]}" || "${repo_missing[$i]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  # Refuse to change files with uncommitted changes, since the commit would
+  # carry them, and make sure the commit can be made before we change
+  # anything.
+  #
+  declare -A ms=()
+  local f fs=() cs=()
+
+  readarray -d '' -t fs <"$tmp_dir/$i/files"
+  for f in "${fs[@]}"; do
+    ms["$f"]=true
+  done
+
+  git -C "$r" status --porcelain -z --untracked-files=no --no-renames |
+    while IFS= read -r -d '' f; do
+      f="${f#???}"
+      if [[ -n "${ms[$f]}" ]]; then
+        cs+=("$f")
+      fi
+    done
+
+  if [[ "${#cs[@]}" -ne 0 ]]; then
+    repo_error "$i" "files in '$r' to add the header to have uncommitted \
+changes" "${cs[@]}"
+    return 0
+  fi
+
+  if [[ "$commit" ]] && ! git -C "$r" var GIT_COMMITTER_IDENT \
+                            >/dev/null 2>&1; then
+    repo_error "$i" "no git identity to commit to '$r' with" \
+      "configure user.name and user.email"
+    return 0
+  fi
+
+  if [[ ! "$push" && ! "$show_push" ]]; then
+    return 0
+  fi
+
+  # Establish where the commit is pushed to.
+  #
+  # The upstream is pushed to explicitly, whatever push.default says.
+  # Since git pushes every commit the branch has that its upstream does
+  # not, the branch must not be ahead of its upstream, so the push
+  # carries exactly our commit.
+  #
+  local b rem mg n
+
+  if ! b="$(git -C "$r" symbolic-ref --quiet --short HEAD)"; then
+    repo_error "$i" "HEAD of '$r' is detached, so there is no branch to push" \
+      "check out a branch or omit --push"
+    return 0
+  fi
+
+  rem="$(git -C "$r" config --get "branch.$b.remote" || true)"
+  mg="$(git -C "$r" config --get "branch.$b.merge" || true)"
+
+  if [[ -z "$rem" || -z "$mg" ]]; then
+    repo_error "$i" "branch '$b' of '$r' has no upstream to push to" \
+      "set one with 'git branch --set-upstream-to' or omit --push"
+    return 0
+  fi
+
+  if ! n="$(git -C "$r" rev-list --count '@{upstream}..HEAD' 2>/dev/null)"
+  then
+    repo_error "$i" "upstream of branch '$b' of '$r' is not fetched" \
+      "run 'git fetch $rem' or omit --push"
+    return 0
+  fi
+
+  if [[ "$n" -ne 0 ]]; then
+    repo_error "$i" "branch '$b' of '$r' has unpushed commits" \
+      "push them first or omit --push"
+    return 0
+  fi
+
+  repo_branch[$i]="$b"
+  repo_remote[$i]="$rem"
+  repo_merge[$i]="$mg"
+}
+
+# Add the header to the files of the repository and, if requested, commit
+# and push them. Mark the repository as failed if the push fails.
+#
+function update () # <index>
+{
+  local i="$1"
+  local r="${repos[$i]}"
+  local d="$tmp_dir/$i"
+  local x="${repo_license[$i]}"
+
+  local fs=() ss=()
+  readarray -d '' -t fs <"$d/files"
+  readarray -t ss <"$d/styles"
+
+  # Write each file with the header into a copy that keeps its mode and
+  # install it with a single rename, so no reader observes it partially
+  # written.
+  #
+  info "+ add header to ${#fs[@]} files in $r"
+
+  local j f
+  for ((j = 0; j != "${#fs[@]}"; ++j)); do
+    f="$r/${fs[$j]}"
+
+    cp -p "$f" "$f.headers"
+    add_header "$f" "${ss[$j]}" "$x" "$f.headers"
+    mv -f "$f.headers" "$f"
+  done
+
+  if [[ "$commit" ]]; then
+    echo "Add SPDX headers" >"$d/message"
+
+    run git -C "$r" --literal-pathspecs add \
+      --pathspec-from-file="$d/files" --pathspec-file-nul >&2
+    run git -C "$r" --literal-pathspecs commit --quiet --only \
+      --file "$d/message" \
+      --pathspec-from-file="$d/files" --pathspec-file-nul >&2
+  fi
+
+  # Push the commit. If this fails (for example, because the upstream
+  # has moved on), the commit stays and can be pushed once the branch is
+  # brought up to date.
+  #
+  if [[ "$push" ]]; then
+    if ! run git -C "$r" push --quiet "${repo_remote[$i]}" \
+         "HEAD:${repo_merge[$i]}" >&2; then
+      repo_error "$i" "push of '$r' to '${repo_remote[$i]}' failed" \
+        "the headers commit is kept in branch '${repo_branch[$i]}'"
+    fi
+  fi
+}
+
+tmp_dir="$(mktemp -d)"
+trap "{ rm -rf '$tmp_dir'; }" EXIT
+
+# Establish the repositories.
+#
+if [[ "$all" ]]; then
+  find_repositories "$dir"
+
+  if [[ "${#repos[@]}" -eq 0 ]]; then
+    error "no git repositories found under '$dir'"
+  fi
+else
+  if ! r="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)"; then
+    error "'$dir' is not inside a git working tree"
+  fi
+
+  repos=("$r")
+fi
+
+# Prepare every repository before changing any, so that a failure in one
+# leaves them all unchanged.
+#
+failed=0
+
+for ((i = 0; i != "${#repos[@]}"; ++i)); do
+  prepare "$i"
+
+  if [[ "${repo_failed[$i]}" ]]; then
+    failed=$((failed + 1))
+  fi
+done
+
+if [[ "$failed" -ne 0 ]]; then
+  if [[ "${#repos[@]}" -gt 1 ]]; then
+    info "error: $failed of ${#repos[@]} repositories failed, nothing changed"
+  fi
+
+  exit 1
+fi
+
+# Print what the update is going to do: the repositories whose source
+# files all have the header and, for each of the rest, the license
+# expression, where the commit is pushed to, and the files the header is
+# added to. Also collect the latter in pending.
+#
+pending=()
+
+function plan ()
+{
+  local i r
+
+  for ((i = 0; i != "${#repos[@]}"; ++i)); do
+    r="${repos[$i]}"
+
+    if [[ "${repo_missing[$i]}" -eq 0 ]]; then
+      echo "every source file in '$r' has the header"
+      continue
+    fi
+
+    pending+=("$i")
+
+    echo
+    echo "repository:   $r"
+    echo "license:      ${repo_license[$i]}"
+    echo "source files: ${repo_sources[$i]} \
+(${repo_headed[$i]} with the header)"
+    echo "excluded:     ${repo_excluded[$i]}"
+
+    if [[ "$push" || "$show_push" ]]; then
+      echo "push to:      ${repo_remote[$i]} ${repo_merge[$i]#refs/heads/}"
+    fi
+
+    echo
+    echo "add the header to:"
+
+    local fs=()
+    readarray -d '' -t fs <"$tmp_dir/$i/files"
+    printf '  %s\n' "${fs[@]}"
+  done
+}
+
+if [[ "$print_only" ]]; then
+  plan
+  exit 0
+fi
+
+# Show the changes and ask for confirmation.
+#
+plan 1>&2
+
+if [[ "${#pending[@]}" -eq 0 ]]; then
+  exit 0
+fi
+
+info
+
+if [[ "${#pending[@]}" -eq 1 ]]; then
+  n="${repo_missing[${pending[0]}]}"
+  question="add the header to $n file$( [[ "$n" -eq 1 ]] || echo s) in \
+'${repos[${pending[0]}]}'?"
+else
+  question="add the header to files in ${#pending[@]} repositories?"
+fi
+
+while [[ ! "$yes" ]]; do
+  printf '%s [y/n]: ' "$question" 1>&2
+
+  if ! read opt; then
+    info
+    error "unable to read answer, use --yes to update without asking"
+  fi
+
+  case "$opt" in
+    y) yes=true ;;
+    n) exit 1   ;;
+  esac
+done
+
+# Update. A failure to push one repository does not prevent updating the
+# rest.
+#
+for i in "${pending[@]}"; do
+  update "$i"
+
+  if [[ "${repo_failed[$i]}" ]]; then
+    failed=$((failed + 1))
+  fi
+done
+
+# Print the push commands, quoted so that they can be executed as
+# printed.
+#
+if [[ "$show_push" ]]; then
+  for i in "${pending[@]}"; do
+    printf '%q ' git -C "${repos[$i]}" push "${repo_remote[$i]}"
+    printf '%q\n' "HEAD:${repo_merge[$i]}"
+  done
+fi
+
+if [[ "$failed" -ne 0 ]]; then
+  exit 1
+fi

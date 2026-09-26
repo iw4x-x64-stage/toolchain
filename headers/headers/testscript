@@ -1,22 +1,765 @@
 # Copyright (c) the IW4x authors (see the AUTHORS file).
 # SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
 
+# Prevent git commands from reading the global and system configuration,
+# running maintenance tasks, and starting daemons.
+#
++export GIT_CONFIG_NOSYSTEM=1
++export GIT_CONFIG_GLOBAL=/dev/null
++export GIT_CONFIG_PARAMETERS="'maintenance.auto=false' 'gc.auto=0' \
+'core.fsmonitor=false' 'credential.helper=' 'core.hooksPath='"
+
+g = [cmdline] git -c user.name=Committer -c user.email=committer@example.org \
+  2>! >&2
+
+# Create the repository and commit everything in it. Every test names its
+# repository repo.
+#
+init = [cmdline] $g init --quiet --initial-branch=main
+save = [cmdline] $g -C repo add --all && \
+  $g -C repo commit --quiet --message 'Commit'
+
+# Run headers as a user whose git identity is configured.
+#
+headers = [cmdline] env GIT_AUTHOR_NAME=Committer \
+  GIT_AUTHOR_EMAIL=committer@example.org GIT_COMMITTER_NAME=Committer \
+  GIT_COMMITTER_EMAIL=committer@example.org $*
+
+holder = 'Copyright (c) the IW4x authors (see the AUTHORS file).'
+iw4x = 'GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1'
+
 : help
 :
 $* --help 2>>~%EOE%
   %usage: .+headers \[<options>\] \[<dir>\]%
+  %.*%*
   EOE
 
 : version
 :
 $* --version >~'/headers \d+\.\d+\.\d+.*/'
 
-: none
+: args
 :
-$* 2>>~%EOE% != 0
-  %error: usage: .+headers \[<options>\] \[<dir>\]%
-  EOE
+{{
+  : too-many
+  :
+  $* d x 2>>~%EOE% != 0
+    %error: usage: .+headers \[<options>\] \[<dir>\]%
+    EOE
 
-: unknown-option
+  : unknown-option
+  :
+  $* --frobnicate 2>'error: unknown option: --frobnicate' != 0
+
+  : license-missing
+  :
+  $* --license 2>'error: license expression expected after --license' != 0
+
+  : push-show-push
+  :
+  $* --push --show-push 2>'error: both --push and --show-push specified' != 0
+
+  : no-commit-push
+  :
+  $* --no-commit --push 2>'error: --push specified with --no-commit' != 0
+
+  : dir-not-exist
+  :
+  $* d 2>"error: 'd' does not exist or is not a directory" != 0
+
+  : dir-not-repository
+  :
+  {
+    mkdir d
+    $* d 2>"error: 'd' is not inside a git working tree" != 0
+  }
+}}
+
+: license
 :
-$* --frobnicate 2>'error: unknown option: --frobnicate' != 0
+{{
+  : manifest
+  :
+  : Test that the IW4x license of the manifest becomes its expression.
+  :
+  {
+    $init repo &repo/***
+    cat <<'EOI' >=repo/manifest
+      : 1
+      name: hello
+      license: other: GPL-3.0-only with IW4x Linking Exception 1.1
+      EOI
+    echo 'int main () {}' >=repo/hello.cxx
+    $save
+
+    $headers --print-only repo >>~"%EOO%"
+
+      %repository:   .+repo%
+      license:      $iw4x
+      source files: 1 \(0 with the header\)
+      excluded:     0
+
+      add the header to:
+        hello.cxx
+      EOO
+  }
+
+  : spdx
+  :
+  : Test that an SPDX license is used as is, without its comment.
+  :
+  {
+    $init repo &repo/***
+    cat <<'EOI' >=repo/manifest
+      : 1
+      name: hello
+      license: BSD-3-Clause ; Kept from upstream.
+      EOI
+    echo 'int main () {}' >=repo/hello.cxx
+    $save
+
+    $headers --yes --no-commit repo 2>!
+    cat repo/hello.cxx >>"EOO"
+      // $holder
+      // SPDX-License-Identifier: BSD-3-Clause
+
+      int main \(\) {}
+      EOO
+  }
+
+  : packages
+  :
+  : Test that the package manifests of a multi-package repository give the
+  : expression if they agree.
+  :
+  {
+    $init repo &repo/***
+    mkdir repo/a repo/b
+    cat <<'EOI' >=repo/packages.manifest
+      : 1
+      location: a/
+      :
+      location: b/
+      EOI
+    cat <<'EOI' >=repo/a/manifest
+      : 1
+      license: MIT
+      EOI
+    cat <<'EOI' >=repo/b/manifest
+      : 1
+      license: MIT
+      EOI
+    echo 'int main () {}' >=repo/a/a.cxx
+    $save
+
+    $headers --print-only repo >>~%EOO%
+      %.*%*
+      license:      MIT
+      %.*%*
+      EOO
+  }
+
+  : packages-disagree
+  :
+  {
+    $init repo &repo/***
+    mkdir repo/a repo/b
+    cat <<'EOI' >=repo/packages.manifest
+      : 1
+      location: a/
+      :
+      location: b/
+      EOI
+    cat <<'EOI' >=repo/a/manifest
+      : 1
+      license: MIT
+      EOI
+    cat <<'EOI' >=repo/b/manifest
+      : 1
+      license: BSD-3-Clause
+      EOI
+    $save
+
+    $headers --print-only repo 2>>~%EOE% != 0
+      %error: package manifests of '.+repo' have different licenses%
+        info: MIT
+        info: BSD-3-Clause
+        info: specify the license expression with --license
+      EOE
+  }
+
+  : no-manifest
+  :
+  {
+    $init repo &repo/***
+    echo 'int main () {}' >=repo/hello.cxx
+    $save
+
+    $headers --print-only repo 2>>~%EOE% != 0
+      %error: no manifest in '.+repo' to take the license from%
+        info: specify the license expression with --license
+      EOE
+  }
+
+  : other
+  :
+  : Test that a license the tool has no expression for is refused.
+  :
+  {
+    $init repo &repo/***
+    cat <<'EOI' >=repo/manifest
+      : 1
+      license: other: proprietary
+      EOI
+    $save
+
+    $headers --print-only repo 2>>~%EOE% != 0
+      %error: no license expression for the license of '.+repo/manifest'%
+        info: specify the license expression with --license
+      EOE
+  }
+
+  : case
+  :
+  : Test that the IW4x license is recognized whatever its case.
+  :
+  {
+    $init repo &repo/***
+    cat <<'EOI' >=repo/manifest
+      : 1
+      license: Other: GPL-3.0-only with IW4X linking exception 1.1
+      EOI
+    echo 'int x;' >=repo/x.cxx
+    $save
+
+    $headers --print-only repo >>~"%EOO%"
+      %.*%*
+      license:      $iw4x
+      %.*%*
+      EOO
+  }
+
+  : alias
+  :
+  : Test that a deprecated license alias stands for its SPDX name.
+  :
+  {
+    $init repo &repo/***
+    cat <<'EOI' >=repo/manifest
+      : 1
+      license: GPLv3
+      EOI
+    echo 'int x;' >=repo/x.cxx
+    $save
+
+    $headers --print-only repo >>~%EOO%
+      %.*%*
+      license:      GPL-3.0-only
+      %.*%*
+      EOO
+  }
+
+  : multiple
+  :
+  : Test that multiple license values, which leave the choice of the license
+  : to the user, are refused.
+  :
+  {
+    $init repo &repo/***
+    cat <<'EOI' >=repo/manifest
+      : 1
+      license: MIT
+      license: BSD-3-Clause
+      EOI
+    $save
+
+    $headers --print-only repo 2>>~%EOE% != 0
+      %error: '.+repo/manifest' has multiple license values%
+        info: specify the license expression with --license
+      EOE
+  }
+
+  : list
+  :
+  : Test that a list of licenses that all apply is refused.
+  :
+  {
+    $init repo &repo/***
+    cat <<'EOI' >=repo/manifest
+      : 1
+      license: GPL-2.0-only, other: available source
+      EOI
+    $save
+
+    $headers --print-only repo 2>>~%EOE% != 0
+      %error: no license expression for the license of '.+repo/manifest'%
+        info: specify the license expression with --license
+      EOE
+  }
+
+  : option
+  :
+  : Test that --license overrides the manifest.
+  :
+  {
+    $init repo &repo/***
+    echo 'int main () {}' >=repo/hello.cxx
+    $save
+
+    $headers --yes --no-commit --license MIT repo 2>!
+    cat repo/hello.cxx >>"EOO"
+      // $holder
+      // SPDX-License-Identifier: MIT
+
+      int main \(\) {}
+      EOO
+  }
+}}
+
+: files
+:
+{{
+  # Every test here runs with the MIT license.
+  #
+  run = [cmdline] $headers --yes --no-commit --license MIT repo 2>!
+
+  : styles
+  :
+  : Test that the header is written in the comment syntax of each file type
+  : and after the prologue it has to follow.
+  :
+  {
+    $init repo &repo/***
+    echo 'int x;' >=repo/x.hxx
+    echo 'x = 1' >=repo/buildfile
+    echo 'print(1)' >=repo/x.lua
+    echo 'p {}' >=repo/x.css
+    cat <<'EOI' >=repo/x.html
+      <!DOCTYPE html>
+      <html></html>
+      EOI
+    echo '.SH NAME' >=repo/x.1
+    echo 'echo 1' >=repo/x.bat
+    cat <<'EOI' >=repo/run
+      #! /bin/sh
+      echo 1
+      EOI
+    echo 'x' >=repo/x.cli.in
+    $save
+    $run
+
+    cat repo/x.hxx >>"EOO"
+      // $holder
+      // SPDX-License-Identifier: MIT
+
+      int x;
+      EOO
+
+    cat repo/buildfile >>"EOO"
+      # $holder
+      # SPDX-License-Identifier: MIT
+
+      x = 1
+      EOO
+
+    cat repo/x.lua >>"EOO"
+      -- $holder
+      -- SPDX-License-Identifier: MIT
+
+      print\(1\)
+      EOO
+
+    cat repo/x.css >>"EOO"
+      /* $holder */
+      /* SPDX-License-Identifier: MIT */
+
+      p {}
+      EOO
+
+    cat repo/x.html >>"EOO"
+      <!DOCTYPE html>
+
+      <!-- $holder -->
+      <!-- SPDX-License-Identifier: MIT -->
+
+      <html></html>
+      EOO
+
+    cat repo/x.1 >>"EOO"
+      .\\" $holder
+      .\\" SPDX-License-Identifier: MIT
+      .\\"
+      .SH NAME
+      EOO
+
+    cat repo/x.bat >>"EOO"
+      rem $holder
+      rem SPDX-License-Identifier: MIT
+
+      echo 1
+      EOO
+
+    cat repo/run >>"EOO"
+      #! /bin/sh
+
+      # $holder
+      # SPDX-License-Identifier: MIT
+
+      echo 1
+      EOO
+
+    cat repo/x.cli.in >>"EOO"
+      // $holder
+      // SPDX-License-Identifier: MIT
+
+      x
+      EOO
+  }
+
+  : skipped
+  :
+  : Test that files that cannot or need not carry the header, excluded
+  : files, and symbolic links are left alone.
+  :
+  {
+    $init repo &repo/***
+    echo 'x' >=repo/README.md
+    echo 'x' >=repo/logo.png
+    mkdir repo/deps
+    echo 'int x;' >=repo/deps/x.cxx
+    echo 'deps/** -spdx' >=repo/.gitattributes
+    ln -s README.md repo/link.cxx
+    $save
+
+    $headers --license MIT repo 2>>~%EOE%
+      %every source file in '.+repo' has the header%
+      EOE
+
+    cat repo/deps/x.cxx >'int x;'
+  }
+
+  : unknown
+  :
+  : Test that files of unknown type are listed and nothing is changed.
+  :
+  {
+    $init repo &repo/***
+    echo 'x' >=repo/data.frob
+    echo 'int x;' >=repo/x.cxx
+    $save
+
+    $headers --yes --no-commit --license MIT repo 2>>~%EOE% != 0
+      %error: files of unknown type in '.+repo'%
+        info: data.frob
+        info: exclude them with -spdx in .gitattributes
+      EOE
+
+    cat repo/x.cxx >'int x;'
+  }
+
+  : line-endings
+  :
+  : Test that the header is written with the line endings of the file and
+  : that the byte order mark and the absence of the final newline are kept.
+  :
+  {
+    $init repo &repo/***
+    printf 'int x;\r\nint y;\r\n' >=repo/crlf.cxx
+    printf '\357\273\277int x;\n' >=repo/bom.cxx
+    printf 'int x;' >=repo/nonl.cxx
+    $save
+    $run
+
+    printf "// %s\r\n// SPDX-License-Identifier: MIT\r\n\r\nint x;\r\nint y;\r\n" \
+      "$holder" >=expected
+    cmp expected repo/crlf.cxx
+
+    printf "\357\273\277// %s\n// SPDX-License-Identifier: MIT\n\nint x;\n" \
+      "$holder" >=expected
+    cmp expected repo/bom.cxx
+
+    printf "// %s\n// SPDX-License-Identifier: MIT\n\nint x;" \
+      "$holder" >=expected
+    cmp expected repo/nonl.cxx
+  }
+
+  : blank
+  :
+  : Test that blank lines at the beginning of the file are replaced by the
+  : one after the header and that an empty file gets the header only.
+  :
+  {
+    $init repo &repo/***
+    printf '\n\nint x;\n' >=repo/x.cxx
+    touch repo/empty.cxx
+    $save
+    $run
+
+    cat repo/x.cxx >>"EOO"
+      // $holder
+      // SPDX-License-Identifier: MIT
+
+      int x;
+      EOO
+
+    cat repo/empty.cxx >>"EOO"
+      // $holder
+      // SPDX-License-Identifier: MIT
+      EOO
+  }
+
+  : mode
+  :
+  : Test that the mode of the file is kept.
+  :
+  {
+    $init repo &repo/***
+    cat <<'EOI' >=repo/run.sh
+      #! /bin/sh
+      EOI
+    chmod +x repo/run.sh
+    $save
+    $run
+
+    git -C repo diff --summary
+  }
+
+  : notice
+  :
+  : Test that files with a notice of their own are listed for review, that
+  : a notice in the code is not one, and that nothing is changed.
+  :
+  {
+    $init repo &repo/***
+    cat <<'EOI' >=repo/web.hxx
+      /*
+        This project is released under the GPL 2.0 license.
+      */
+      int x;
+      EOI
+    cat <<'EOI' >=repo/steam.hxx
+      #pragma once
+      // License checks.
+      bool has_license ();
+      EOI
+    $save
+
+    $headers --yes --no-commit --license MIT repo 2>>~%EOE% != 0
+      %error: files in '.+repo' carry notices of their own%
+        info: web.hxx
+        info: exclude third-party files with -spdx in .gitattributes
+        info: or add the header next to the notice by hand
+      EOE
+
+    cat repo/steam.hxx >>EOO
+      #pragma once
+      // License checks.
+      bool has_license ();
+      EOO
+  }
+
+  : notice-headed
+  :
+  : Test that a header added by hand next to a notice is accepted.
+  :
+  {
+    $init repo &repo/***
+    cat <<"EOI" >=repo/x.hxx
+      // Copyright (c) 2015 Someone.
+      //
+      // $holder
+      // SPDX-License-Identifier: MIT
+      int x;
+      EOI
+    $save
+
+    $headers --license MIT repo 2>>~%EOE%
+      %every source file in '.+repo' has the header%
+      EOE
+  }
+
+  : wrong
+  :
+  : Test that an incomplete header and a different expression are errors.
+  :
+  {
+    $init repo &repo/***
+    echo '// SPDX-License-Identifier: MIT' >=repo/a.cxx
+    echo "// $holder" >=repo/b.cxx
+    echo '// SPDX-License-Identifier: GPL-2.0-only' >=repo/c.cxx
+    $save
+
+    $headers --yes --no-commit --license MIT repo 2>>~%EOE% != 0
+      %error: files in '.+repo' have a wrong header%
+        info: a.cxx: no copyright line
+        info: b.cxx: no SPDX-License-Identifier line
+        info: c.cxx: license 'GPL-2.0-only', expected 'MIT'
+      EOE
+  }
+
+  : idempotent
+  :
+  : Test that files with the header are left alone.
+  :
+  {
+    $init repo &repo/***
+    echo 'int x;' >=repo/x.cxx
+    $save
+    $run
+
+    $headers --license MIT repo 2>>~%EOE%
+      %every source file in '.+repo' has the header%
+      EOE
+  }
+}}
+
+: update
+:
+{{
+  run = [cmdline] $headers --license MIT
+
+  : uncommitted
+  :
+  : Test that files with uncommitted changes are not changed.
+  :
+  {
+    $init repo &repo/***
+    echo 'int x;' >=repo/x.cxx
+    $save
+    echo 'int y;' >=repo/x.cxx
+
+    $run --yes repo 2>>~%EOE% != 0
+      %error: files in '.+repo' to add the header to have uncommitted changes%
+        info: x.cxx
+      EOE
+
+    cat repo/x.cxx >'int y;'
+  }
+
+  : answer
+  :
+  : Test that without --yes the update needs an answer.
+  :
+  {
+    $init repo &repo/***
+    echo 'int x;' >=repo/x.cxx
+    $save
+
+    $run --no-commit repo <'n' 2>! != 0
+    cat repo/x.cxx >'int x;'
+  }
+
+  : commit
+  :
+  : Test that the changed files, and only they, are committed and that
+  : whatever else is staged stays in the index.
+  :
+  {
+    $init repo &repo/***
+    echo 'int x;' >=repo/x.cxx
+    echo 'int y;' >=repo/y.cxx
+    $save
+
+    echo 'z' >=repo/z.txt
+    $g -C repo add z.txt
+
+    $run --yes repo 2>!
+
+    git -C repo log -1 --format='%B' >>EOO
+      Add SPDX headers
+
+      EOO
+
+    git -C repo show --name-only --format= HEAD >>EOO
+      x.cxx
+      y.cxx
+      EOO
+
+    git -C repo diff --cached --name-only >'z.txt'
+  }
+
+  : no-commit
+  :
+  : Test that --no-commit changes the files without committing them.
+  :
+  {
+    $init repo &repo/***
+    echo 'int x;' >=repo/x.cxx
+    $save
+
+    $run --yes --no-commit repo 2>!
+
+    git -C repo log -1 --format='%s' >'Commit'
+    git -C repo status --porcelain >' M x.cxx'
+  }
+
+  : print-only
+  :
+  : Test that --print-only prints the plan to stdout and changes nothing.
+  :
+  {
+    $init repo &repo/***
+    echo 'int x;' >=repo/x.cxx
+    $save
+
+    $run --print-only repo >>~%EOO%
+
+      %repository:   .+repo%
+      license:      MIT
+      source files: 1 (0 with the header)
+      excluded:     0
+
+      add the header to:
+        x.cxx
+      EOO
+
+    cat repo/x.cxx >'int x;'
+  }
+
+  : push
+  :
+  : Test that the commit, and only it, reaches the upstream.
+  :
+  {
+    $g init --quiet --bare remote.git &remote.git/***
+    $init repo &repo/***
+    echo 'int x;' >=repo/x.cxx
+    $save
+    $g -C repo remote add origin ../remote.git
+    $g -C repo push --quiet --set-upstream origin main
+
+    $run --yes --push repo 2>!
+
+    git -C remote.git log --format='%s' main >>EOO
+      Add SPDX headers
+      Commit
+      EOO
+  }
+
+  : all
+  :
+  : Test that a failure in one repository leaves every repository unchanged.
+  :
+  {
+    mkdir ws
+    $g init --quiet --initial-branch=main ws/a &ws/a/***
+    echo 'x' >=ws/a/x.frob
+    $g -C ws/a add x.frob
+    $g -C ws/a commit --quiet --message 'Commit'
+
+    $g init --quiet --initial-branch=main ws/b &ws/b/***
+    echo 'int x;' >=ws/b/x.cxx
+    $g -C ws/b add x.cxx
+    $g -C ws/b commit --quiet --message 'Commit'
+
+    $run --all --yes --no-commit ws 2>>~%EOE% != 0
+      %error: files of unknown type in '.+/ws/a'%
+        info: x.frob
+        info: exclude them with -spdx in .gitattributes
+      error: 1 of 2 repositories failed, nothing changed
+      EOE
+
+    cat ws/b/x.cxx >'int x;'
+  }
+}}
