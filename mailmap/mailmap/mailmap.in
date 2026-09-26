@@ -1,0 +1,48 @@
+#! /usr/bin/env bash
+
+# Copyright (c) the IW4x authors (see the AUTHORS file).
+# SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+
+# Map contributor identities to one preferred name and address.
+#
+# Options:
+#
+# --help
+#
+#   Print usage information and exit.
+#
+# --version
+#
+#   Print version and exit.
+#
+usage="usage: $0 [<options>]"
+
+trap "{ exit 1; }" ERR
+set -o errtrace # Trap ERR in functions.
+set -o pipefail # Fail if any pipeline command fails.
+
+# Diagnostics.
+#
+function info ()  { echo "$*" 1>&2; }
+function error () { info "error: $*"; exit 1; }
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --help)
+      echo "$usage"
+      exit 0
+      ;;
+    --version)
+      echo "mailmap @version@"
+      exit 0
+      ;;
+    -*)
+      error "unknown option '$1'"
+      ;;
+    *)
+      error "unexpected argument '$1'"
+      ;;
+  esac
+done
+
+error "$usage"

@@ -1,0 +1,25 @@
+# Copyright (c) the IW4x authors (see the AUTHORS file).
+# SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+
+: help
+:
+$* --help >~'/usage: .+mailmap \[<options>\]/'
+
+: version
+:
+$* --version >~'/mailmap \d+\.\d+\.\d+.*/'
+
+: no-arguments
+: A command line with nothing to do is an error that shows the usage.
+:
+$* 2>~'/error: usage: .+mailmap \[<options>\]/' != 0
+
+: unknown-option
+: An option that is not recognized is named in the diagnostic.
+:
+$* --frobnicate 2>"error: unknown option '--frobnicate'" != 0
+
+: unexpected-argument
+: A positional argument is not accepted.
+:
+$* foo 2>"error: unexpected argument 'foo'" != 0

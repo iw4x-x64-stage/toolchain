@@ -1,0 +1,10 @@
+./: exe{mailmap}: in{mailmap} testscript
+
+# The script carries no bash modules, so it is preprocessed by the in rule.
+# Its substitutions use @ because $ is everywhere in bash.
+#
+exe{mailmap}:
+{
+  in.symbol = '@'
+  in.mode = lax
+}
