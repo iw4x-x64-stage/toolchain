@@ -55,6 +55,17 @@ mailmap --push identities
 The branch must not be ahead of its upstream beforehand, so that the push
 carries only the `.mailmap` commit.
 
+To update every repository under a directory, for example the clones of all
+the repositories of an organization, with one confirmation for all of them:
+
+```
+mailmap --all --push identities repositories/
+```
+
+All the repositories are prepared before any of them is changed, so a problem
+in one leaves them all unchanged. Repositories inside another repository's
+working tree, such as submodules, are not visited.
+
 To check that it is up to date, for example in CI:
 
 ```

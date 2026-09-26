@@ -64,6 +64,13 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
   :
   $* --check --push r 2>'error: --push specified with --check' != 0
 
+  : all-dir-not-exist
+  :
+  {
+    touch r
+    $* --all r d 2>"error: 'd' does not exist or is not a directory" != 0
+  }
+
   : identities-not-exist
   :
   $* r 2>"error: 'r' does not exist or is not a file" != 0
@@ -659,11 +666,180 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
 
       $mailmap --yes --push ../../r repo 2>>~%EOE% != 0
         %.*%*
-        error: push to 'origin' failed
+        %error: push of '.+repo' to 'origin' failed%
           info: the .mailmap commit is kept in branch 'main'
         EOE
 
       git -C repo log -1 --format='%s' >'Update .mailmap'
+    }
+  }}
+
+  : all
+  :
+  {{
+    # Create a repository in the specified directory with one commit of the
+    # specified author.
+    #
+    repo = [cmdline] $g init --quiet --initial-branch=main
+
+    : discover
+    :
+    : Test that the repositories under the directory are found, hidden ones
+    : included, and that repositories inside a working tree and linked
+    : worktrees are skipped.
+    :
+    {
+      mkdir ws ws/sub ws/plain
+
+      $repo ws/a &ws/a/***
+      $g -C ws/a commit --quiet --allow-empty --message 'Commit' \
+        --author 'jane <jane@example.org>'
+
+      $repo ws/sub/b &ws/sub/b/***
+      $g -C ws/sub/b commit --quiet --allow-empty --message 'Commit' \
+        --author 'jane <jane@example.org>'
+
+      $repo ws/.hidden &ws/.hidden/***
+      $g -C ws/.hidden commit --quiet --allow-empty --message 'Commit' \
+        --author 'jane <jane@example.org>'
+
+      $repo ws/a/nested
+      $g -C ws/a/nested commit --quiet --allow-empty --message 'Commit' \
+        --author 'Stranger <stranger@example.net>'
+
+      $g -C ws/a worktree add --quiet ../worktree &ws/worktree/***
+
+      $* --all --yes ../../r ws 2>>~%EOE%
+        %.*%*
+        %warning: skipping linked worktree '.+/ws/worktree'%
+        %.*%*
+        EOE
+
+      test -f ws/a/.mailmap
+      test -f ws/sub/b/.mailmap
+      test -f ws/.hidden/.mailmap
+      test -f ws/a/nested/.mailmap == 1
+      test -f ws/worktree/.mailmap == 1
+    }
+
+    : none
+    :
+    : Test that a directory without repositories is an error.
+    :
+    {
+      mkdir ws
+      $* --all ../../r ws 2>"error: no git repositories found under 'ws'" != 0
+    }
+
+    : failed
+    :
+    : Test that a failure in one repository leaves every repository unchanged.
+    :
+    {
+      mkdir ws
+
+      $repo ws/a &ws/a/***
+      $g -C ws/a commit --quiet --allow-empty --message 'Commit' \
+        --author 'Stranger <stranger@example.net>'
+
+      $repo ws/b &ws/b/***
+      $g -C ws/b commit --quiet --allow-empty --message 'Commit' \
+        --author 'jane <jane@example.org>'
+
+      $* --all --yes ../../r ws 2>>~%EOE% != 0
+        %error: history of '.+/ws/a' has identities not in '../../r'%
+          info: Stranger <stranger@example.net>
+        error: 1 of 2 repositories failed, nothing changed
+        EOE
+
+      test -f ws/b/.mailmap == 1
+    }
+
+    : check
+    :
+    : Test that --check reports each stale repository.
+    :
+    {
+      mkdir ws
+
+      $repo ws/a &ws/a/***
+      $g -C ws/a commit --quiet --allow-empty --message 'Commit' \
+        --author 'jane <jane@example.org>'
+
+      $repo ws/b &ws/b/***
+      $g -C ws/b commit --quiet --allow-empty --message 'Commit' \
+        --author 'jane <jane@example.org>'
+
+      $* --yes ../../r ws/b 2>!
+
+      $* --all --check ../../r ws 2>>~%EOE% != 0
+        %error: '.+/ws/a/\.mailmap' is absent%
+          info: run mailmap without --check to update it
+        EOE
+    }
+
+    : confirm
+    :
+    : Test that the update of every repository is confirmed once and that
+    : declining leaves them all unchanged.
+    :
+    {
+      mkdir ws
+
+      $repo ws/a &ws/a/***
+      $g -C ws/a commit --quiet --allow-empty --message 'Commit' \
+        --author 'jane <jane@example.org>'
+
+      $repo ws/b &ws/b/***
+      $g -C ws/b commit --quiet --allow-empty --message 'Commit' \
+        --author 'jane <jane@example.org>'
+
+      $* --all ../../r ws <'n' 2>>:~%EOE% != 0
+        %.*%*
+        %update 2 \.mailmap files\? \[y/n\]: %
+        EOE
+
+      test -f ws/a/.mailmap == 1
+      test -f ws/b/.mailmap == 1
+    }
+
+    : push
+    :
+    : Test that a rejected push does not prevent pushing the rest.
+    :
+    {
+      mkdir ws
+
+      $g init --quiet --bare a.git &a.git/***
+      $g init --quiet --bare b.git &b.git/***
+
+      $repo ws/a &ws/a/***
+      $g -C ws/a commit --quiet --allow-empty --message 'Commit' \
+        --author 'jane <jane@example.org>'
+      $g -C ws/a remote add origin ../../a.git
+      $g -C ws/a push --quiet --set-upstream origin main
+
+      $repo ws/b &ws/b/***
+      $g -C ws/b commit --quiet --allow-empty --message 'Commit' \
+        --author 'jane <jane@example.org>'
+      $g -C ws/b remote add origin ../../b.git
+      $g -C ws/b push --quiet --set-upstream origin main
+
+      # Advance the upstream of a behind its back.
+      #
+      $g clone --quiet --branch main a.git other &other/***
+      $g -C other commit --quiet --allow-empty --message 'Other' \
+        --author 'Jane Doe <jane@example.org>'
+      $g -C other push --quiet
+
+      $mailmap --all --yes --push ../../r ws 2>>~%EOE% != 0
+        %.*%*
+        %error: push of '.+/ws/a' to 'origin' failed%
+          info: the .mailmap commit is kept in branch 'main'
+        %.*%*
+        EOE
+
+      git -C b.git log -1 --format='%s' main >'Update .mailmap'
     }
   }}
 

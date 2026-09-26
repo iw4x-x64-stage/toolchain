@@ -3,7 +3,7 @@
 # Copyright (c) the IW4x authors (see the AUTHORS file).
 # SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
 
-# Update the .mailmap file of a git repository from the identity register.
+# Update the .mailmap file of git repositories from the identity register.
 #
 # The identities (name and email) a repository history carries are the commit
 # authors and the Co-authored-by trailer values. The .mailmap maps each of
@@ -40,6 +40,19 @@
 #
 # Options:
 #
+# --all|-a
+#
+#   Operate on every repository found under <dir> instead of the one it is in.
+#   The search does not descend into a repository working tree, so nested
+#   repositories (submodules, repositories checked out inside another one) are
+#   never visited. Linked worktrees are skipped as well, since their
+#   repository is visited through its main working tree.
+#
+#   All the repositories are prepared before any of them is changed, so a
+#   failure in one leaves them all unchanged, and the changes are confirmed
+#   once for all of them. A failure to push one of them does not prevent
+#   pushing the rest.
+#
 # --check
 #
 #   Check that the .mailmap is up to date without changing anything. Fail if
@@ -64,7 +77,8 @@
 #
 # <identities>  The identity register file.
 #
-# <dir>         A directory in the repository working tree. If not specified,
+# <dir>         A directory in the repository working tree or, with --all,
+#               the directory to search for repositories. If not specified,
 #               the current directory is assumed.
 #
 usage="usage: $0 [<options>] <identities> [<dir>]"
@@ -90,6 +104,7 @@ function run () # <cmd> <arg>...
 }
 
 mode=update
+all=
 commit=
 push=
 yes=
@@ -100,6 +115,7 @@ while [[ "$#" -gt 0 ]]; do
       info "$usage"
       info
       info "Options:"
+      info "  --all|-a   Operate on every repository found under <dir>."
       info "  --check    Check that .mailmap is up to date without changing it."
       info "  --commit   Commit the updated .mailmap."
       info "  --push     Push the commit to the upstream, implies --commit."
@@ -112,6 +128,10 @@ while [[ "$#" -gt 0 ]]; do
     --version)
       echo "mailmap @version@"
       exit 0
+      ;;
+    -a|--all)
+      all=true
+      shift
       ;;
     --check)
       mode=check
@@ -171,15 +191,6 @@ fi
 if ! command -v git >/dev/null; then
   error "unable to execute git: command not found"
 fi
-
-# The repository working tree root, so that the .mailmap path does not depend
-# on where in the working tree we were pointed.
-#
-if ! repo="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)"; then
-  error "'$dir' is not inside a git working tree"
-fi
-
-mailmap="$repo/.mailmap"
 
 # Make sure that git commands fail instead of prompting for
 # authentication and don't run maintenance tasks or start daemons.
@@ -454,22 +465,98 @@ alias in '$identities'"
 # Print the distinct identities the repository history carries, one per
 # line in the bytewise order. A repository without commits carries none.
 #
-function history_identities ()
+function history_identities () # <repo>
 {
-  if ! git -C "$repo" rev-parse --verify --quiet HEAD >/dev/null; then
+  local r="$1"
+
+  if ! git -C "$r" rev-parse --verify --quiet HEAD >/dev/null; then
     return 0
   fi
 
   {
-    git -C "$repo" log --format='%an <%ae>' HEAD
-    git -C "$repo" log \
+    git -C "$r" log --format='%an <%ae>' HEAD
+    git -C "$r" log \
       --format='%(trailers:key=Co-authored-by,valueonly,unfold)' HEAD
   } | sed -e '/^$/d' | LC_ALL=C sort -u
 }
 
-# Generate the .mailmap into the file and set the identities_count and mapped
-# variables to the number of history identities and of those that git maps
-# with it. Fail if the register does not attribute some history identity.
+# The repositories.
+#
+# The repositories are indexed in the order they are found. Each has its
+# own subdirectory of the temporary directory named after its index.
+#
+repos=()
+
+repo_failed=()     # Preparing or updating the repository failed.
+repo_state=()      # .mailmap state: current, stale, or absent.
+repo_identities=() # Number of history identities.
+repo_mapped=()     # Number of history identities the .mailmap maps.
+repo_branch=()     # Branch, remote, and upstream branch to push to.
+repo_remote=()
+repo_merge=()
+
+# Report the error for the repository and mark it as failed. Each
+# argument after the first is printed as an info line.
+#
+function repo_error () # <index> <text> [<info>...]
+{
+  local i="$1"
+
+  info "error: $2"
+  shift 2
+
+  local s
+  for s in "$@"; do
+    info "  info: $s"
+  done
+
+  repo_failed[$i]=true
+}
+
+# Add the repository working tree roots found under the directory to
+# repos. Do not descend into a working tree and skip linked worktrees.
+#
+# Note that a working tree root carries .git, which is a directory or,
+# for a linked worktree or a submodule, a file.
+#
+function find_repositories () # <dir>
+{
+  local d="$1"
+
+  if [[ -e "$d/.git" ]]; then
+    local t
+    if t="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" &&
+       [[ "$t" == "$(realpath "$d")" ]]; then
+
+      local g c
+      g="$(git -C "$d" rev-parse --absolute-git-dir)"
+      c="$(git -C "$d" rev-parse --path-format=absolute --git-common-dir)"
+
+      if [[ "$g" == "$c" ]]; then
+        repos+=("$t")
+      else
+        info "warning: skipping linked worktree '$t'"
+      fi
+
+      return 0
+    fi
+  fi
+
+  # Note that hidden directories are searched as well, since a
+  # repository can be one (for example, .github).
+  #
+  local s
+  for s in "$d"/* "$d"/.[!.]* "$d"/..?*; do
+    if [[ -d "$s" && ! -L "$s" && "$(basename "$s")" != ".git" ]]; then
+      find_repositories "$s"
+    fi
+  done
+}
+
+# Generate the repository .mailmap into the file and record the numbers
+# of its history identities and of those that git maps with it. Mark the
+# repository as failed if the register does not attribute some history
+# identity.
 #
 # The .mailmap has an entry for each name alias a history identity
 # matches and for each email a history identity carries under a name or
@@ -477,9 +564,11 @@ function history_identities ()
 # entries are unique and in the bytewise order, so the same history and
 # register always produce the same file.
 #
-function generate () # <file>
+function generate () # <index> <file>
 {
-  local f="$1"
+  local i="$1"
+  local f="$2"
+  local r="${repos[$i]}"
 
   local es=() # Entries.
   local us=() # Unattributed identities.
@@ -487,9 +576,9 @@ function generate () # <file>
   local ws=() # Preferred identities git must answer with.
 
   local hs=()
-  history_identities | readarray -t hs
+  history_identities "$r" | readarray -t hs
 
-  identities_count="${#hs[@]}"
+  repo_identities[$i]="${#hs[@]}"
 
   local h k p j
   for h in "${hs[@]}"; do
@@ -498,7 +587,7 @@ function generate () # <file>
     # an identity at all, and then neither we nor git can map it.
     #
     if ! parse_identity "$h" || [[ -z "$id_name" ]]; then
-      info "warning: '$h' in the history of '$repo' is not an identity"
+      info "warning: '$h' in the history of '$r' is not an identity"
       continue
     fi
 
@@ -529,13 +618,9 @@ ${alias_name[$j]} <${alias_email[$j]}>")
   done
 
   if [[ "${#us[@]}" -ne 0 ]]; then
-    info "error: history of '$repo' has identities not in '$identities'"
-
-    for h in "${us[@]}"; do
-      info "  info: $h"
-    done
-
-    exit 1
+    repo_error "$i" "history of '$r' has identities not in '$identities'" \
+      "${us[@]}"
+    return 0
   fi
 
   {
@@ -546,16 +631,19 @@ ${alias_name[$j]} <${alias_email[$j]}>")
     fi
   } >"$f"
 
-  mapped="${#qs[@]}"
+  repo_mapped[$i]="${#qs[@]}"
 
-  if [[ "$mapped" -eq 0 ]]; then
+  if [[ "${#qs[@]}" -eq 0 ]]; then
     return 0
   fi
 
   # Query git in an empty repository that ignores the global and system
   # configuration, so the generated file is the only mailmap it reads.
   #
-  local d="$tmp_dir/check"
+  # Note that a mismatch means the .mailmap generation itself is wrong
+  # and nothing is changed in any repository.
+  #
+  local d="$tmp_dir/$i/check"
 
   GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git init --quiet "$d"
   cp "$f" "$d/.mailmap"
@@ -565,14 +653,106 @@ ${alias_name[$j]} <${alias_email[$j]}>")
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
     git -C "$d" check-mailmap --stdin | readarray -t rs
 
-  local i
-  for ((i = 0; i != mapped; ++i)); do
-    if [[ "${rs[$i]}" != "${ws[$i]}" ]]; then
-      info "error: generated .mailmap maps '${qs[$i]}' to '${rs[$i]}'"
-      info "  info: '$identities' attributes it to '${ws[$i]}'"
+  local n
+  for ((n = 0; n != "${#qs[@]}"; ++n)); do
+    if [[ "${rs[$n]}" != "${ws[$n]}" ]]; then
+      info "error: generated .mailmap maps '${qs[$n]}' to '${rs[$n]}'"
+      info "  info: '$identities' attributes it to '${ws[$n]}'"
       exit 1
     fi
   done
+}
+
+# Generate the repository .mailmap and establish its state. If it is to
+# be updated, also establish that it can be committed and pushed. Mark
+# the repository as failed if any of this fails.
+#
+function prepare () # <index>
+{
+  local i="$1"
+  local r="${repos[$i]}"
+  local m="$r/.mailmap"
+
+  mkdir "$tmp_dir/$i"
+
+  generate "$i" "$tmp_dir/$i/mailmap"
+
+  if [[ "${repo_failed[$i]}" ]]; then
+    return 0
+  fi
+
+  if [[ ! -f "$m" ]]; then
+    repo_state[$i]="absent"
+  elif cmp -s "$tmp_dir/$i/mailmap" "$m"; then
+    repo_state[$i]="current"
+  else
+    repo_state[$i]="stale"
+  fi
+
+  if [[ "$mode" == "check" || "${repo_state[$i]}" == "current" ]]; then
+    return 0
+  fi
+
+  # Refuse to replace uncommitted changes to the .mailmap, since they
+  # would be lost, and make sure the commit can be made before we change
+  # anything.
+  #
+  if [[ -n "$(git -C "$r" status --porcelain -- .mailmap)" ]]; then
+    repo_error "$i" "'$m' has uncommitted changes"
+    return 0
+  fi
+
+  if [[ "$commit" ]] && ! git -C "$r" var GIT_COMMITTER_IDENT \
+                            >/dev/null 2>&1; then
+    repo_error "$i" "no git identity to commit to '$r' with" \
+      "configure user.name and user.email"
+    return 0
+  fi
+
+  if [[ ! "$push" ]]; then
+    return 0
+  fi
+
+  # Establish where the commit is pushed to.
+  #
+  # The upstream is pushed to explicitly, whatever push.default says.
+  # Since git pushes every commit the branch has that its upstream does
+  # not, the branch must not be ahead of its upstream, so the push
+  # carries exactly our commit.
+  #
+  local b rem mg n
+
+  if ! b="$(git -C "$r" symbolic-ref --quiet --short HEAD)"; then
+    repo_error "$i" "HEAD of '$r' is detached, so there is no branch to push" \
+      "check out a branch or omit --push"
+    return 0
+  fi
+
+  rem="$(git -C "$r" config --get "branch.$b.remote" || true)"
+  mg="$(git -C "$r" config --get "branch.$b.merge" || true)"
+
+  if [[ -z "$rem" || -z "$mg" ]]; then
+    repo_error "$i" "branch '$b' of '$r' has no upstream to push to" \
+      "set one with 'git branch --set-upstream-to' or omit --push"
+    return 0
+  fi
+
+  if ! n="$(git -C "$r" rev-list --count '@{upstream}..HEAD' 2>/dev/null)"
+  then
+    repo_error "$i" "upstream of branch '$b' of '$r' is not fetched" \
+      "run 'git fetch $rem' or omit --push"
+    return 0
+  fi
+
+  if [[ "$n" -ne 0 ]]; then
+    repo_error "$i" "branch '$b' of '$r' has unpushed commits" \
+      "push them first or omit --push"
+    return 0
+  fi
+
+  repo_branch[$i]="$b"
+  repo_remote[$i]="$rem"
+  repo_merge[$i]="$mg"
 }
 
 # Print the entries of the .mailmap file, one per line in the bytewise
@@ -585,106 +765,169 @@ function entries () # <file>
   fi
 }
 
+# Install the generated .mailmap into the repository and, if requested,
+# commit and push it. Mark the repository as failed if the push fails.
+#
+function update () # <index>
+{
+  local i="$1"
+  local r="${repos[$i]}"
+  local m="$r/.mailmap"
+  local d="$tmp_dir/$i"
+
+  # Compose the commit message, listing the entries the update adds and
+  # removes in the message body.
+  #
+  if [[ "$commit" ]]; then
+    entries "$m" >"$d/old"
+    entries "$d/mailmap" >"$d/new"
+
+    local body
+    body="$(
+      LC_ALL=C comm -13 "$d/old" "$d/new" | sed -e 's/^/  add    /'
+      LC_ALL=C comm -23 "$d/old" "$d/new" | sed -e 's/^/  remove /'
+    )"
+
+    {
+      echo "Update .mailmap"
+
+      if [[ -n "$body" ]]; then
+        echo
+        echo "$body"
+      fi
+    } >"$d/message"
+  fi
+
+  # Install the .mailmap with a single rename, so no reader observes it
+  # partially written.
+  #
+  run cp "$d/mailmap" "$m.tmp"
+  run mv -f "$m.tmp" "$m"
+
+  if [[ "$commit" ]]; then
+    run git -C "$r" add -- .mailmap >&2
+    run git -C "$r" commit --quiet --only --file "$d/message" -- .mailmap >&2
+  fi
+
+  # Push the commit. If this fails (for example, because the upstream
+  # has moved on), the commit stays and can be pushed once the branch is
+  # brought up to date.
+  #
+  if [[ "$push" ]]; then
+    if ! run git -C "$r" push --quiet "${repo_remote[$i]}" \
+         "HEAD:${repo_merge[$i]}" >&2; then
+      repo_error "$i" "push of '$r' to '${repo_remote[$i]}' failed" \
+        "the .mailmap commit is kept in branch '${repo_branch[$i]}'"
+    fi
+  fi
+}
+
 tmp_dir="$(mktemp -d)"
 trap "{ rm -rf '$tmp_dir'; }" EXIT
 
-load_identities
-generate "$tmp_dir/mailmap"
+# Establish the repositories.
+#
+if [[ "$all" ]]; then
+  find_repositories "$dir"
 
-if [[ ! -f "$mailmap" ]]; then
-  state="absent"
-elif cmp -s "$tmp_dir/mailmap" "$mailmap"; then
-  state="current"
+  if [[ "${#repos[@]}" -eq 0 ]]; then
+    error "no git repositories found under '$dir'"
+  fi
 else
-  state="stale"
-fi
-
-if [[ "$mode" == "check" ]]; then
-  if [[ "$state" != "current" ]]; then
-    info "error: '$mailmap' is $state"
-    info "  info: run $(basename "$0") without --check to update it"
-    exit 1
+  if ! r="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)"; then
+    error "'$dir' is not inside a git working tree"
   fi
 
-  exit 0
+  repos=("$r")
 fi
 
-if [[ "$state" == "current" ]]; then
-  info "'$mailmap' is up to date"
-  exit 0
-fi
+load_identities
 
-# Refuse to replace uncommitted changes to the .mailmap, since they would be
-# lost, and make sure the commit can be made before we change anything.
+# Prepare every repository before changing any, so that a failure in one
+# leaves them all unchanged.
 #
-if [[ -n "$(git -C "$repo" status --porcelain -- .mailmap)" ]]; then
-  error "'$mailmap' has uncommitted changes"
-fi
+failed=0
 
-if [[ "$commit" ]] && ! git -C "$repo" var GIT_COMMITTER_IDENT \
-                          >/dev/null 2>&1; then
-  info "error: no git identity to commit to '$repo' with"
-  info "  info: configure user.name and user.email"
+for ((i = 0; i != "${#repos[@]}"; ++i)); do
+  prepare "$i"
+
+  if [[ "${repo_failed[$i]}" ]]; then
+    failed=$((failed + 1))
+  fi
+done
+
+if [[ "$failed" -ne 0 ]]; then
+  if [[ "${#repos[@]}" -gt 1 ]]; then
+    info "error: $failed of ${#repos[@]} repositories failed, nothing changed"
+  fi
+
   exit 1
 fi
 
-# Establish where the commit is pushed to.
+# Check.
 #
-# The upstream is pushed to explicitly, whatever push.default says. Since git
-# pushes every commit the branch has that its upstream does not, the branch
-# must not be ahead of its upstream, so the push carries exactly our commit.
-#
-if [[ "$push" ]]; then
-  if ! branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD)"; then
-    info "error: HEAD of '$repo' is detached, so there is no branch to push"
-    info "  info: check out a branch or omit --push"
+if [[ "$mode" == "check" ]]; then
+  for ((i = 0; i != "${#repos[@]}"; ++i)); do
+    if [[ "${repo_state[$i]}" != "current" ]]; then
+      info "error: '${repos[$i]}/.mailmap' is ${repo_state[$i]}"
+      info "  info: run $(basename "$0") without --check to update it"
+      failed=$((failed + 1))
+    fi
+  done
+
+  if [[ "$failed" -ne 0 ]]; then
     exit 1
   fi
 
-  remote="$(git -C "$repo" config --get "branch.$branch.remote" || true)"
-  merge="$(git -C "$repo" config --get "branch.$branch.merge" || true)"
-
-  if [[ -z "$remote" || -z "$merge" ]]; then
-    info "error: branch '$branch' of '$repo' has no upstream to push to"
-    info "  info: set one with 'git branch --set-upstream-to' or omit --push"
-    exit 1
-  fi
-
-  if ! ahead="$(git -C "$repo" rev-list --count '@{upstream}..HEAD' \
-                  2>/dev/null)"; then
-    info "error: upstream of branch '$branch' of '$repo' is not fetched"
-    info "  info: run 'git fetch $remote' or omit --push"
-    exit 1
-  fi
-
-  if [[ "$ahead" -ne 0 ]]; then
-    info "error: branch '$branch' of '$repo' has unpushed commits"
-    info "  info: push them first or omit --push"
-    exit 1
-  fi
+  exit 0
 fi
 
 # Show the changes and ask for confirmation.
 #
-info "history identities: $identities_count ($mapped mapped)"
+pending=()
 
-if [[ "$push" ]]; then
-  info "push to:            $remote ${merge#refs/heads/}"
+for ((i = 0; i != "${#repos[@]}"; ++i)); do
+  if [[ "${repo_state[$i]}" == "current" ]]; then
+    info "'${repos[$i]}/.mailmap' is up to date"
+    continue
+  fi
+
+  pending+=("$i")
+
+  info
+  info "repository:         ${repos[$i]}"
+  info "history identities: ${repo_identities[$i]} (${repo_mapped[$i]} mapped)"
+
+  if [[ "$push" ]]; then
+    info "push to:            ${repo_remote[$i]} ${repo_merge[$i]#refs/heads/}"
+  fi
+
+  info
+
+  if [[ "${repo_state[$i]}" == "absent" ]]; then
+    sed -e 's/^/+/' "$tmp_dir/$i/mailmap" 1>&2
+  else
+    diff -u --label "a/.mailmap" --label "b/.mailmap" \
+      "${repos[$i]}/.mailmap" "$tmp_dir/$i/mailmap" 1>&2 || true
+  fi
+done
+
+if [[ "${#pending[@]}" -eq 0 ]]; then
+  exit 0
 fi
 
 info
 
-if [[ "$state" == "absent" ]]; then
-  sed -e 's/^/+/' "$tmp_dir/mailmap" 1>&2
+if [[ "${#pending[@]}" -eq 1 ]]; then
+  question="update '${repos[${pending[0]}]}/.mailmap'?"
 else
-  diff -u --label "a/.mailmap" --label "b/.mailmap" \
-    "$mailmap" "$tmp_dir/mailmap" 1>&2 || true
+  question="update ${#pending[@]} .mailmap files?"
 fi
-
-info
 
 while [[ ! "$yes" ]]; do
-  if ! read -p "update '$mailmap'? [y/n]: " opt; then
+  printf '%s [y/n]: ' "$question" 1>&2
+
+  if ! read opt; then
     info
     error "unable to read answer, use --yes to update without asking"
   fi
@@ -695,48 +938,17 @@ while [[ ! "$yes" ]]; do
   esac
 done
 
-# Compose the commit message, listing the entries the update adds and removes
-# in the message body.
+# Update. A failure to push one repository does not prevent updating the
+# rest.
 #
-if [[ "$commit" ]]; then
-  entries "$mailmap" >"$tmp_dir/old"
-  entries "$tmp_dir/mailmap" >"$tmp_dir/new"
+for i in "${pending[@]}"; do
+  update "$i"
 
-  body="$(
-    LC_ALL=C comm -13 "$tmp_dir/old" "$tmp_dir/new" | sed -e 's/^/  add    /'
-    LC_ALL=C comm -23 "$tmp_dir/old" "$tmp_dir/new" | sed -e 's/^/  remove /'
-  )"
-
-  {
-    echo "Update .mailmap"
-
-    if [[ -n "$body" ]]; then
-      echo
-      echo "$body"
-    fi
-  } >"$tmp_dir/message"
-fi
-
-# Install the .mailmap with a single rename, so no reader observes it partially
-# written.
-#
-run cp "$tmp_dir/mailmap" "$mailmap.tmp"
-run mv -f "$mailmap.tmp" "$mailmap"
-
-if [[ "$commit" ]]; then
-  run git -C "$repo" add -- .mailmap >&2
-  run git -C "$repo" commit --quiet --only --file "$tmp_dir/message" \
-    -- .mailmap >&2
-fi
-
-# Push the commit. If this fails (for example, because the upstream has moved
-# on), the commit stays and can be pushed once the branch is brought up to
-# date.
-#
-if [[ "$push" ]]; then
-  if ! run git -C "$repo" push --quiet "$remote" "HEAD:$merge" >&2; then
-    info "error: push to '$remote' failed"
-    info "  info: the .mailmap commit is kept in branch '$branch'"
-    exit 1
+  if [[ "${repo_failed[$i]}" ]]; then
+    failed=$((failed + 1))
   fi
+done
+
+if [[ "$failed" -ne 0 ]]; then
+  exit 1
 fi
