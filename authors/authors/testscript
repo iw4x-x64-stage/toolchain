@@ -1,22 +1,635 @@
 # Copyright (c) the IW4x authors (see the AUTHORS file).
 # SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
 
+# Prevent git commands from reading the global and system configuration,
+# running maintenance tasks, and starting daemons.
+#
++export GIT_CONFIG_NOSYSTEM=1
++export GIT_CONFIG_GLOBAL=/dev/null
++export GIT_CONFIG_PARAMETERS="'maintenance.auto=false' 'gc.auto=0' \
+'core.fsmonitor=false' 'credential.helper=' 'core.hooksPath='"
+
+g = [cmdline] git -c user.name=Committer -c user.email=committer@example.org \
+  2>! >&2
+
+# Create the repository and commit to it with the specified author (and,
+# optionally, trailers). Every test names its repository repo.
+#
+init = [cmdline] $g init --quiet --initial-branch=main
+commit = [cmdline] $g -C repo commit --quiet --allow-empty --message 'Commit'
+
+# Run authors as a user whose git identity is configured.
+#
+authors = [cmdline] env GIT_AUTHOR_NAME=Committer \
+  GIT_AUTHOR_EMAIL=committer@example.org GIT_COMMITTER_NAME=Committer \
+  GIT_COMMITTER_EMAIL=committer@example.org $*
+
+# The AUTHORS preamble. A test writes the entries it expects into the
+# entries file and compares the preamble followed by them to AUTHORS.
+#
++cat <<'EOI' >=preamble
+  This file lists the IW4x authors, the collective name that the copyright
+  notices in the source files refer to.
+
+  The copyright for the code is held by the contributors of the code. The
+  revision history in the version control system is the primary source of
+  authorship information for copyright purposes. Every contributor is listed
+  below once, by their preferred name, in alphabetical order:
+
+  EOI
+
+preamble = $~/preamble
+
 : help
 :
 $* --help 2>>~%EOE%
   %usage: .+authors \[<options>\] <identities> \[<dir>\]%
+  %.*%*
   EOE
 
 : version
 :
 $* --version >~'/authors \d+\.\d+\.\d+.*/'
 
-: none
+: args
 :
-$* 2>>~%EOE% != 0
-  %error: usage: .+authors \[<options>\] <identities> \[<dir>\]%
-  EOE
+{{
+  : none
+  :
+  $* 2>>~%EOE% != 0
+    %error: usage: .+authors \[<options>\] <identities> \[<dir>\]%
+    EOE
 
-: unknown-option
+  : too-many
+  :
+  $* r d x 2>>~%EOE% != 0
+    %error: usage: .+authors \[<options>\] <identities> \[<dir>\]%
+    EOE
+
+  : unknown-option
+  :
+  $* --frobnicate r 2>'error: unknown option: --frobnicate' != 0
+
+  : push-show-push
+  :
+  $* --push --show-push r 2>'error: both --push and --show-push specified' != 0
+
+  : no-commit-push
+  :
+  $* --no-commit --push r 2>'error: --push specified with --no-commit' != 0
+
+  : no-commit-show-push
+  :
+  $* --no-commit --show-push r 2>'error: --show-push specified with --no-commit' != 0
+
+  : identities-not-exist
+  :
+  $* r 2>"error: 'r' does not exist or is not a file" != 0
+
+  : dir-not-exist
+  :
+  {
+    touch r
+    $* r d 2>"error: 'd' does not exist or is not a directory" != 0
+  }
+
+  : dir-not-repository
+  :
+  {
+    touch r
+    mkdir d
+    $* r d 2>"error: 'd' is not inside a git working tree" != 0
+  }
+}}
+
+: register
 :
-$* --frobnicate 2>'error: unknown option: --frobnicate' != 0
+{{
+  : invalid-authors
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane@example.org
+      authors: yes
+      EOI
+    $init repo &repo/***
+    $* r repo 2>"error: invalid authors value 'yes' of 'Jane Doe' in 'r'" != 0
+  }
+
+  : unknown-value
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane@example.org
+      github: jdoe
+      EOI
+    $init repo &repo/***
+    $* r repo 2>"error: unknown value 'github' in 'r'" != 0
+  }
+}}
+
+: generate
+:
+{{
+  +cat <<'EOI' >=r
+    : 1
+    name: Jane Doe
+    email: jane@example.org
+    alias: J. Doe <jane@old.example.org>
+    alias: <jdoe@example.com>
+    :
+    name: John Roe
+    email: john@example.org
+    authors: email
+    :
+    name: Rick Poe
+    email: rick@example.org
+    :
+    name: Build Bot
+    email: bot@example.org
+    authors: none
+    EOI
+
+  : no-commits
+  :
+  : Test that a repository without commits gets AUTHORS without entries.
+  :
+  {
+    $init repo &repo/***
+    $* --yes --no-commit ../r repo 2>!
+    diff $preamble repo/AUTHORS
+  }
+
+  : listed
+  :
+  : Test that every person the history carries is listed once, the way the
+  : register says, sorted, and that bots are not listed.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'jane <jane@example.org>'
+    $commit --author 'J. Doe <jane@old.example.org>'
+    $commit --author 'John Roe <john@example.org>'
+    $commit --author 'Build Bot <bot@example.org>'
+    $commit --author 'rick poe <rick@example.org>'
+    $* --yes --no-commit ../r repo 2>!
+
+    cat <<'EOI' >=entries
+      Jane Doe
+      John Roe <john@example.org>
+      Rick Poe
+      EOI
+    cat $preamble entries >=expected
+    diff expected repo/AUTHORS
+  }
+
+  : co-author
+  :
+  : Test that Co-authored-by trailers contribute people.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'Jane Doe <jane@example.org>' \
+      --trailer 'Co-authored-by: Rick Poe <rick@example.org>'
+    $* --yes --no-commit ../r repo 2>!
+
+    cat <<'EOI' >=entries
+      Jane Doe
+      Rick Poe
+      EOI
+    cat $preamble entries >=expected
+    diff expected repo/AUTHORS
+  }
+
+  : unattributed
+  :
+  : Test that identities the register does not attribute are listed and that
+  : AUTHORS is left alone.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'Stranger <stranger@example.net>'
+    $commit --author 'Jane Doe <jane@example.org>'
+
+    $* --yes --no-commit ../r repo 2>>~%EOE% != 0
+      %error: history of '.+repo' has identities not in '../r'%
+        info: Stranger <stranger@example.net>
+      EOE
+
+    test -f repo/AUTHORS == 1
+  }
+
+  : kept
+  :
+  : Test that the people AUTHORS lists stay listed without being in the
+  : history, written the way the register currently lists them, and that
+  : only 'authors: none' removes a person.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'Jane Doe <jane@example.org>'
+
+    cat $preamble - <<'EOI' >=repo/AUTHORS
+      Build Bot
+      J. Doe <jane@old.example.org>
+      John Roe
+      rick poe
+      EOI
+    $g -C repo add AUTHORS
+    $g -C repo commit --quiet --message 'Add AUTHORS' \
+      --author 'Jane Doe <jane@example.org>'
+
+    $* --yes --no-commit ../r repo 2>!
+
+    cat <<'EOI' >=entries
+      Jane Doe
+      John Roe <john@example.org>
+      Rick Poe
+      EOI
+    cat $preamble entries >=expected
+    diff expected repo/AUTHORS
+  }
+
+  : kept-unattributed
+  :
+  : Test that entries the register does not attribute are listed and that
+  : AUTHORS is left alone.
+  :
+  {
+    $init repo &repo/***
+    cat $preamble - <<'EOI' >=repo/AUTHORS
+      Jane Doe
+      Stranger
+      EOI
+
+    $* --yes --no-commit ../r repo 2>>~%EOE% != 0
+      %error: '.+repo/AUTHORS' has entries not in '../r'%
+        info: Stranger
+      EOE
+  }
+
+  : kept-ambiguous
+  :
+  : Test that an entry without an email must name exactly one person.
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Sam Poe
+      email: sam@example.org
+      :
+      name: Sam Poe
+      email: sam@example.net
+      EOI
+    $init repo &repo/***
+    cat $preamble - <<'EOI' >=repo/AUTHORS
+      Sam Poe
+      EOI
+
+    $* --yes --no-commit r repo 2>>~%EOE% != 0
+      %error: entry 'Sam Poe' in '.+repo/AUTHORS' matches multiple people in 'r'%
+        info: Sam Poe
+        info: Sam Poe
+        info: add their emails to the entries to tell them apart
+      EOE
+  }
+
+  : ambiguous
+  :
+  : Test that two people listed by the same name are refused.
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Sam Poe
+      email: sam@example.org
+      :
+      name: Sam Poe
+      email: sam@example.net
+      EOI
+    $init repo &repo/***
+    $commit --author 'Sam Poe <sam@example.org>'
+    $commit --author 'Sam Poe <sam@example.net>'
+
+    $* --yes --no-commit r repo 2>>~%EOE% != 0
+      %error: people listed in '.+repo/AUTHORS' cannot be told apart%
+        info: Sam Poe
+        info: list them with 'authors: email' in 'r'
+      EOE
+  }
+
+  : foreign
+  :
+  : Test that an AUTHORS file without the preamble is left alone.
+  :
+  {
+    $init repo &repo/***
+    echo 'Jane Doe' >=repo/AUTHORS
+
+    $* --yes --no-commit ../r repo 2>>~%EOE% != 0
+      %error: '.+repo/AUTHORS' does not start with the AUTHORS preamble%
+        info: put the entries to keep after the preamble or remove the file
+      EOE
+
+    cat repo/AUTHORS >'Jane Doe'
+  }
+
+  : symlink
+  :
+  : Test that AUTHORS that is a symbolic link is left alone.
+  :
+  {
+    $init repo &repo/***
+    cp $preamble AUTHORS
+    ln -s ../AUTHORS repo/AUTHORS
+
+    $* --yes --no-commit ../r repo 2>>~%EOE% != 0
+      %error: '.+repo/AUTHORS' is a symbolic link%
+        info: run authors in the repository it refers to
+      EOE
+  }
+
+  : up-to-date
+  :
+  : Test that an up to date AUTHORS is reported and left alone.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'jane <jane@example.org>'
+    $* --yes --no-commit ../r repo 2>!
+
+    $* --no-commit ../r repo 2>>~%EOE%
+      %'.+repo/AUTHORS' is up to date%
+      EOE
+  }
+
+  : uncommitted
+  :
+  : Test that uncommitted changes to AUTHORS are not overwritten.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'jane <jane@example.org>'
+    cat $preamble - <<'EOI' >=repo/AUTHORS
+      Rick Poe
+      EOI
+
+    $* --yes --no-commit ../r repo 2>>~%EOE% != 0
+      %error: '.+repo/AUTHORS' has uncommitted changes%
+      EOE
+  }
+
+  : answer
+  :
+  : Test that without --yes the update needs an answer.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'jane <jane@example.org>'
+
+    $* --no-commit ../r repo <'n' 2>! != 0
+    test -f repo/AUTHORS == 1
+
+    $* --no-commit ../r repo <'y' 2>!
+    test -f repo/AUTHORS
+  }
+
+  : no-answer
+  :
+  : Test that the update fails if there is nobody to answer.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'jane <jane@example.org>'
+
+    $* --no-commit ../r repo <:'' 2>>~%EOE% != 0
+      %.*%*
+      error: unable to read answer, use --yes to update without asking
+      EOE
+  }
+
+  : commit
+  :
+  : Test that AUTHORS, and only it, is committed with the entries the update
+  : adds and removes listed in the message, and that whatever else is staged
+  : stays in the index.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'Jane Doe <jane@example.org>'
+
+    cat $preamble - <<'EOI' >=repo/AUTHORS
+      Build Bot
+      EOI
+    $g -C repo add AUTHORS
+    $g -C repo commit --quiet --message 'Add AUTHORS' \
+      --author 'Jane Doe <jane@example.org>'
+
+    echo 'x' >=repo/x
+    $g -C repo add x
+
+    $authors --yes ../r repo 2>!
+
+    git -C repo log -1 --format='%B' >>EOO
+      Update AUTHORS
+
+        add    Jane Doe
+        remove Build Bot
+
+      EOO
+
+    git -C repo show --name-only --format= HEAD >'AUTHORS'
+    git -C repo diff --cached --name-only >'x'
+  }
+
+  : no-commit
+  :
+  : Test that --no-commit installs AUTHORS without committing it.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'jane <jane@example.org>'
+
+    $* -y --no-commit ../r repo 2>!
+
+    test -f repo/AUTHORS
+    git -C repo log -1 --format='%s' >'Commit'
+    git -C repo status --porcelain >'?? AUTHORS'
+  }
+
+  : print-only
+  :
+  : Test that --print-only prints the plan to stdout, asks nothing, and
+  : changes nothing.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'jane <jane@example.org>'
+
+    $authors --print-only ../r repo >>~%EOO%
+
+      %repository:         .+repo%
+      history identities: 1
+      people listed:      1
+
+      +This file lists the IW4x authors, the collective name that the copyright
+      %.*%*
+      +Jane Doe
+      EOO
+
+    test -f repo/AUTHORS == 1
+  }
+
+  : push
+  :
+  {{
+    # Create the upstream repository and the repository tracking it, with
+    # one commit pushed.
+    #
+    upstream = [cmdline] $g init --quiet --bare remote.git
+    track = [cmdline] $g -C repo remote add origin ../remote.git
+    publish = [cmdline] $g -C repo push --quiet --set-upstream origin main
+
+    : success
+    :
+    : Test that the AUTHORS commit, and only it, reaches the upstream.
+    :
+    {
+      $upstream &remote.git/***
+      $init repo &repo/***
+      $commit --author 'jane <jane@example.org>'
+      $track
+      $publish
+
+      $authors --yes --push ../../r repo 2>!
+
+      git -C remote.git log --format='%s' main >>EOO
+        Update AUTHORS
+        Commit
+        EOO
+    }
+
+    : show-push
+    :
+    : Test that --show-push commits and prints the push command.
+    :
+    {
+      $upstream &remote.git/***
+      $init repo &repo/***
+      $commit --author 'jane <jane@example.org>'
+      $track
+      $publish
+
+      $authors --yes --show-push ../../r repo 2>! | set cmd
+
+      echo "$cmd" >~'%git -C .+repo push origin HEAD:refs/heads/main%'
+      git -C remote.git log -1 --format='%s' main >'Commit'
+    }
+
+    : ahead
+    :
+    : Test that a branch with unpushed commits is refused before anything
+    : changes.
+    :
+    {
+      $upstream &remote.git/***
+      $init repo &repo/***
+      $commit --author 'jane <jane@example.org>'
+      $track
+      $publish
+      $commit --author 'Jane Doe <jane@example.org>'
+
+      $authors --yes --push ../../r repo 2>>"EOE" != 0
+        error: branch 'main' of '$~/repo' has unpushed commits
+          info: push them first or omit --push
+        EOE
+
+      test -f repo/AUTHORS == 1
+    }
+  }}
+
+  : all
+  :
+  {{
+    repo = [cmdline] $g init --quiet --initial-branch=main
+
+    : discover
+    :
+    : Test that the repositories under the directory are found and that
+    : repositories inside a working tree are skipped.
+    :
+    {
+      mkdir ws ws/sub
+
+      $repo ws/a &ws/a/***
+      $g -C ws/a commit --quiet --allow-empty --message 'Commit' \
+        --author 'jane <jane@example.org>'
+
+      $repo ws/sub/b &ws/sub/b/***
+      $g -C ws/sub/b commit --quiet --allow-empty --message 'Commit' \
+        --author 'jane <jane@example.org>'
+
+      $repo ws/a/nested
+      $g -C ws/a/nested commit --quiet --allow-empty --message 'Commit' \
+        --author 'Stranger <stranger@example.net>'
+
+      $* --all --yes --no-commit ../../r ws 2>!
+
+      test -f ws/a/AUTHORS
+      test -f ws/sub/b/AUTHORS
+      test -f ws/a/nested/AUTHORS == 1
+    }
+
+    : failed
+    :
+    : Test that a failure in one repository leaves every repository unchanged.
+    :
+    {
+      mkdir ws
+
+      $repo ws/a &ws/a/***
+      $g -C ws/a commit --quiet --allow-empty --message 'Commit' \
+        --author 'Stranger <stranger@example.net>'
+
+      $repo ws/b &ws/b/***
+      $g -C ws/b commit --quiet --allow-empty --message 'Commit' \
+        --author 'jane <jane@example.org>'
+
+      $* --all --yes --no-commit ../../r ws 2>>~%EOE% != 0
+        %error: history of '.+/ws/a' has identities not in '../../r'%
+          info: Stranger <stranger@example.net>
+        error: 1 of 2 repositories failed, nothing changed
+        EOE
+
+      test -f ws/b/AUTHORS == 1
+    }
+
+    : confirm
+    :
+    : Test that the update of every repository is confirmed once.
+    :
+    {
+      mkdir ws
+
+      $repo ws/a &ws/a/***
+      $g -C ws/a commit --quiet --allow-empty --message 'Commit' \
+        --author 'jane <jane@example.org>'
+
+      $repo ws/b &ws/b/***
+      $g -C ws/b commit --quiet --allow-empty --message 'Commit' \
+        --author 'jane <jane@example.org>'
+
+      $* --all --no-commit ../../r ws <'n' 2>>:~%EOE% != 0
+        %.*%*
+        %update 2 AUTHORS files\? \[y/n\]: %
+        EOE
+
+      test -f ws/a/AUTHORS == 1
+      test -f ws/b/AUTHORS == 1
+    }
+  }}
+}}
