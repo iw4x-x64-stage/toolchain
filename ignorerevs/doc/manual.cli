@@ -1,0 +1,224 @@
+// Copyright (c) the IW4x authors (see the AUTHORS file).
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+
+"\name=ignorerevs-manual"
+"\title=Manual"
+
+// NOTES
+//
+// - Maximum <pre> line is 70 characters.
+//
+
+"
+\h0#preface|Preface|
+
+This document describes \c{ignorerevs}, a tool for maintaining the
+\c{.git-blame-ignore-revs} files of git repositories. For the command line
+interface refer to the \l{ignorerevs(1)} man page.
+
+\h1#intro|Introduction|
+
+The \c{ignorerevs} tool maintains the \c{.git-blame-ignore-revs} file of a
+git repository. This file lists the commits that \c{git-blame(1)} should
+skip when attributing lines to commits, normally commits that only change
+formatting (such as a commit that fixes the indentation of a file).
+GitHub uses this file by default and git uses it if the
+\c{blame.ignoreRevsFile} configuration variable is set to it.
+
+Such commits are easy to overlook if the file is maintained by hand,
+especially the small ones (a stray tab fixed in passing, a file converted to
+different line endings) that accumulate in a repository with a long
+history. For example, the history of the IW4x client contains 35 commits
+(out of more than five thousand) that only change whitespace.
+
+The \c{ignorerevs} tool finds these commits in the history and lists them
+in the file. It also keeps the commits that the file already lists, which
+means that a reformat it does not recognize as such (for example, one that
+also moves line breaks) can be added by hand.
+
+We begin with a tutorial introduction that generates the
+\c{.git-blame-ignore-revs} file of a small repository and then discuss what
+is considered a whitespace change as well as the commits added by hand in
+more detail.
+
+\h1#start|Getting Started|
+
+Let's start with a repository whose history has two commits that only
+change formatting (an indentation fix and a reformat into a single line)
+and one that changes what the program does:
+
+\
+$ cd hello/
+$ git log --format='%h %s'
+7211661 Return failure
+e28ddab Join main into one line
+f6cff4f Indent main
+ba19f54 Add hello
+\
+
+The repository doesn't have \c{.git-blame-ignore-revs} yet, so let's run
+\c{ignorerevs} and see what it would write:
+
+\
+$ ignorerevs
+
+repository:         /src/hello
+history commits:    4
+whitespace commits: 1
+
++# Commits that git-blame(1) skips since they only change ...
+...
++# Indent main
++f6cff4f0b9e84e07b0ea7d03a91b5147cca59b0f
+
+update '/src/hello/.git-blame-ignore-revs'? [y/n]: y
+\
+
+The first lines show the number of commits in the history and how many of
+them only change whitespace, one in our case. Next comes the new file in
+the \c{diff(1)} notation. It starts with a comment that describes the file
+(shortened here) followed by the commit, written as its full object name
+with its subject in a comment above it (this is the customary format of
+\c{.git-blame-ignore-revs}).
+
+Once we answer \c{y}, \c{ignorerevs} installs the file and commits it with
+the added commits listed in the commit message:
+
+\
+$ git log -1 --format=%B
+Update .git-blame-ignore-revs
+
+  add    f6cff4f Indent main
+\
+
+Notice that \c{e28ddab}, the reformat into a single line, is not in the
+file. This commit moves line breaks and \c{ignorerevs} does not consider
+that a whitespace change (see \l{#whitespace Whitespace Changes} for
+details). To have \c{git-blame(1)} skip it as well, we add it to the file
+by hand, using its abbreviated name, and run \c{ignorerevs} again:
+
+\
+$ echo e28ddab >>.git-blame-ignore-revs
+$ git commit -am 'Ignore the one-line main'
+$ ignorerevs
+
+repository:         /src/hello
+history commits:    6
+whitespace commits: 1
+commits by hand:    1
+
+--- a/.git-blame-ignore-revs
++++ b/.git-blame-ignore-revs
+@@ -6,4 +6,5 @@
+
+ # Indent main
+ f6cff4f0b9e84e07b0ea7d03a91b5147cca59b0f
+-e28ddab
++# Join main into one line
++e28ddab1104f80742b4b9540f7dc979b23315b60
+
+update '/src/hello/.git-blame-ignore-revs'? [y/n]: y
+\
+
+The added commit is written back with its full object name and subject and
+from now on it is kept on every update. If we now set
+\c{blame.ignoreRevsFile}, then \c{git blame} skips both formatting commits
+and attributes the line to the commit that changed what the program
+returns:
+
+\
+$ git config blame.ignoreRevsFile .git-blame-ignore-revs
+$ git blame -s hello.cxx
+72116613 1) int main () { return 1; }
+\
+
+The options of \c{ignorerevs} are the same as those of \c{mailmap} (see
+\l{ignorerevs(1)} for details).
+
+\h1#whitespace|Whitespace Changes|
+
+To decide whether a commit only changes whitespace, \c{ignorerevs} compares
+each file that the commit modifies as it was before the commit with how it
+is after. Before the comparison, each line of both versions is normalized
+by removing its leading and trailing whitespace and replacing each run of
+whitespace inside it with a single space. Blank lines as well as carriage
+returns at the end of lines are dropped. If the two versions of every file
+are the same after normalization, then the commit only changes whitespace.
+
+As a result, a commit that reindents code (including code that was not
+indented before) or converts its line endings is a whitespace change. A
+commit that adds or removes a space between two words (turning \c{int x}
+into \c{intx}, say) is not.
+
+Note that the \c{-b} and \c{-w} options of \c{git-diff(1)} are not quite
+what we need here. With \c{-b} indenting a line that was not indented is a
+change, since this option only ignores differences in the amount of
+whitespace where there is some. And with \c{-w} the lines \c{int x} and
+\c{intx} are the same, since this option ignores all whitespace. You can
+see the former with the indentation fix from our walkthrough:
+
+\
+$ git diff -b f6cff4f^ f6cff4f
+@@ -1,4 +1,4 @@
+ int main ()
+ {
+-return 0;
++  return 0;
+ }
+\
+
+Only commits that modify existing files are considered. If a commit adds or
+removes files (a rename counts as both) or only changes the mode of a file,
+then it is not a whitespace change. Merges are not considered at all (the
+commits they merge are).
+
+Commits that change files in which whitespace is significant are not
+considered either. For example, indentation determines the structure of a
+Python program and two spaces at the end of a line are a line break in
+Markdown, so reformatting such a file may well change its meaning. See
+\l{ignorerevs(1)} for the list of such file types.
+
+\h1#hand|Commits Added by Hand|
+
+A reformat that does more than change whitespace (such as one that wraps
+long lines or sorts \c{#include} directives) is not recognized by
+\c{ignorerevs}, since telling whether it changes the meaning of the code is
+beyond a comparison of text. If you want \c{git-blame(1)} to skip such a
+commit, then add it to the file by hand. Any name that git understands can
+be used (for example, an abbreviated object name) since \c{ignorerevs}
+writes the commit back with its full object name and subject. From then on
+the commit is kept on every update.
+
+A listed commit must be in the history of \c{HEAD}. If the history is
+rewritten (for example, by a rebase that gives the listed commits new
+object names), then \c{ignorerevs} lists the entries it can no longer find
+and fails without changing anything. Such an entry has to be replaced with
+the rewritten commit (or removed) by hand, since only a person can tell
+whether the rewritten commit still only changes formatting.
+
+A shallow clone is refused since its history is incomplete and every
+listed commit older than the clone would appear to be missing.
+
+\h1#architecture|How ignorerevs Works|
+
+This chapter describes the file that \c{ignorerevs} writes.
+
+\h#architecture-file|The File|
+
+The file starts with a comment that describes it, followed by an empty line
+and then the commits, from oldest to newest. Each commit is written as its
+full object name (\c{git blame} refuses to run if the file contains an
+abbreviated name that it cannot resolve) preceded by a comment with its
+subject. Since both the order and the comments are derived from the
+history, the same history and entries always produce the same file and an
+up to date file is left alone.
+
+If a repository has no commits that only change whitespace and no
+\c{.git-blame-ignore-revs}, then it is left alone as well (there is no
+reason to add a file that lists nothing).
+
+Note that installing the file replaces it, which would turn a symbolic link
+into a copy of its target. As a result, a \c{.git-blame-ignore-revs} that is
+a symbolic link is refused and it is the file it refers to that should be
+updated.
+"

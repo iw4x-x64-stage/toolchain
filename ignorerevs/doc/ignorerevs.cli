@@ -1,0 +1,173 @@
+// Copyright (c) the IW4x authors (see the AUTHORS file).
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+
+"\section=1"
+"\name=ignorerevs"
+"\summary=update git repository .git-blame-ignore-revs from history"
+
+namespace ignorerevs
+{
+  {
+    "<options> <dir>",
+
+    "\h|SYNOPSIS|
+
+     \c{\b{ignorerevs} [<options>] [<dir>]}
+
+     \h|DESCRIPTION|
+
+     The \cb{ignorerevs} command updates the \cb{.git-blame-ignore-revs} file
+     of a git repository, which lists the commits that \cb{git-blame(1)}
+     skips, attributing the lines they touch to the commits before them. Git
+     reads the file if \cb{blame.ignoreRevsFile} is set to it and GitHub reads
+     it by default.
+
+     The file lists every commit in the history of \cb{HEAD} that only
+     changes whitespace (see WHITESPACE below for details), along with the
+     commits it already lists. So a commit added by hand, for example, a
+     reformat that also moves line breaks, is kept on every update.
+
+     If <dir> is specified, then it should be a directory inside the working
+     tree of the repository to update or, with \cb{--all}, the directory to
+     search for repositories. Otherwise, the current working directory is
+     assumed.
+
+     Each commit is written as its full object name preceded by a comment
+     with its subject, oldest first, after a comment that says what the file
+     is. A commit added by hand may be written in any form git understands,
+     for example, abbreviated, and is written back in full. The command fails
+     if the file lists something that is not a commit in the history of
+     \cb{HEAD} (for example, after the history was rewritten), listing each
+     entry, as well as for a shallow clone, whose history is incomplete. A
+     repository without such commits and without the file is left alone.
+
+     The update proceeds the same way as that of \cb{mailmap(1)}:
+
+     \ol|
+
+     \li|Prepare every repository: generate its \cb{.git-blame-ignore-revs}
+     and establish that it can be installed, committed, and, if requested,
+     pushed. If any repository fails to prepare, then nothing is changed in
+     any of them.|
+
+     \li|Print the plan: for each repository whose file is not up to date,
+     the numbers of commits in the history, of those that only change
+     whitespace, and of those added by hand, where the commit is pushed to,
+     and the changes to the file.|
+
+     \li|Ask for confirmation, unless \cb{--yes} is specified.|
+
+     \li|Install each file with a single rename, then commit and, if
+     requested, push it.||
+
+     For example:
+
+     \
+     $ ignorerevs
+
+     repository:         /src/hello
+     history commits:    4
+     whitespace commits: 1
+
+     +# Commits that git-blame(1) skips since they only change formatting.
+     ...
+     +# Indent main
+     +f6cff4f0b9e84e07b0ea7d03a91b5147cca59b0f
+
+     update '/src/hello/.git-blame-ignore-revs'? [y/n]: y
+     \
+
+     The commit subject is \cb{Update .git-blame-ignore-revs} and its message
+     body lists the commits the update adds, for example:
+
+     \
+     Update .git-blame-ignore-revs
+
+       add    f6cff4f Indent main
+     \
+
+     \h#whitespace|WHITESPACE|
+
+     A commit only changes whitespace if it modifies some files and nothing
+     else and each file is the same before and after the commit once its
+     lines are normalized: the leading and trailing whitespace of each line is
+     removed, each run of whitespace within it is replaced with a single
+     space, and blank lines are dropped. A commit that changes indentation,
+     trailing whitespace, the amount of whitespace between words, blank
+     lines, or line endings qualifies. A commit that adds or removes a space
+     between two words, adds, removes, or renames a file, or only changes the
+     mode of a file does not.
+
+     Merges are not considered and neither are commits that change a file in
+     which whitespace is significant: YAML, Python, Markdown,
+     reStructuredText, makefiles, and patches.
+     "
+  }
+
+  class options
+  {
+    "\h|OPTIONS|"
+
+    bool --all|-a
+    {
+      "Operate on every repository found under \i{dir}. Without this option,
+       the repository \i{dir} is in is operated on. The search does not
+       descend into a repository working tree, so nested repositories
+       (submodules, repositories checked out inside another one) are never
+       visited. Linked worktrees are skipped as well, since their repository
+       is visited through its main working tree. Hidden directories are
+       searched."
+    };
+
+    bool --no-commit
+    {
+      "Don't commit the updated \cb{.git-blame-ignore-revs}. By default, it is
+       committed and only it is, whatever else is staged."
+    };
+
+    bool --push
+    {
+      "Push the commit to the upstream of the current branch. To push exactly
+       this commit, the branch must not be ahead of its upstream before the
+       update. If the push fails, then the commit is kept and the rest of the
+       repositories are still updated."
+    };
+
+    bool --show-push
+    {
+      "Print the push command without executing it. This allows examining
+       the commit before pushing it. Note that the command is printed to
+       \cb{stdout}."
+    };
+
+    bool --print-only
+    {
+      "Print to \cb{stdout} what would be done without actually doing
+       anything."
+    };
+
+    bool --yes|-y
+    {
+      "Don't prompt for confirmation before updating
+       \cb{.git-blame-ignore-revs}."
+    };
+
+    bool --help
+    {
+      "Print usage information and exit."
+    };
+
+    bool --version
+    {
+      "Print version and exit."
+    };
+  };
+
+  "
+  \h|EXIT STATUS|
+
+  Non-zero exit status is returned in case of an error, including when the
+  update is not confirmed. Nothing is changed in any repository if the error
+  is diagnosed before the confirmation.
+  "
+}

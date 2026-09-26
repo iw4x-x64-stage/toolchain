@@ -16,6 +16,7 @@ email: wroy@proton.me
 build-error-email: wroy@proton.me
 depends: * build2 >= 0.18.0
 depends: * bpkg >= 0.18.0
+depends: * cli ^1.2.0 ? ($config.ignorerevs.develop)
 requires: bash >= 4.3
 builds: default
 builds: -windows ; Not yet tested with the bash from Git for Windows.
