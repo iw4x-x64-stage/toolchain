@@ -1,0 +1,308 @@
+// Copyright (c) the IW4x authors (see the AUTHORS file).
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+
+"\name=headers-manual"
+"\title=Manual"
+
+// NOTES
+//
+// - Maximum <pre> line is 70 characters, except the header lines, which
+//   are as long as the header is.
+//
+
+"
+\h0#preface|Preface|
+
+This document describes \c{headers}, a tool for adding the SPDX header to
+the source files of git repositories. For the command line interface refer
+to the \l{headers(1)} man page.
+
+\h1#intro|Introduction|
+
+Every source file of an IW4x project starts with a header that names the
+copyright holder and the license under which the file is distributed. For
+example, in C++:
+
+\
+// Copyright (c) the IW4x authors (see the AUTHORS file).
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+\
+
+The holder, the IW4x authors, is a collective name that the \c{AUTHORS} file
+of the repository defines (see the \c{authors} manual for details). The
+license is given as an SPDX license expression, a standard notation that
+tools can read as well as people. The expression above stands for the GNU
+General Public License, version 3 only, together with the IW4x Linking
+Exception. The exception is not on the SPDX License List and so it is
+referred to with the \c{AdditionRef-} prefix that SPDX provides for such
+cases.
+
+The \c{headers} tool adds this header to the source files of a git
+repository. It takes the license expression from the repository manifest
+(where the license of the repository is already recorded) and writes the
+header in the comment syntax of each file type.
+
+Note that \c{headers} only writes the header into files that carry no
+notice at all. A repository may contain files that are not ours to label
+(such as a library that was copied into it) as well as files with a notice
+of their own (perhaps from before the project adopted this header), and
+inserting our header into such a file could make a false statement about
+its license. If \c{headers} finds such files (or files of a type it does
+not recognize), then it lists them and changes nothing until each of them
+is either excluded or given the header by hand.
+
+We begin with a tutorial introduction that adds the headers to a repository
+with a copied library in it and then discuss how files are classified and
+handled in more detail.
+
+\h1#start|Getting Started|
+
+Let's start with a repository that contains a small program along with a
+copy of the zlib header that the program uses:
+
+\
+$ cd hello/
+$ git ls-files
+README.md
+hello/buildfile
+hello/hello.cxx
+libs/zlib/zlib.h
+manifest
+\
+
+The repository is a \c{build2} package and its manifest specifies the IW4x
+license:
+
+\
+$ grep license manifest
+license: other: GPL-3.0-only with IW4x Linking Exception 1.1
+\
+
+None of the files has the header yet, so let's see what \c{headers} makes
+of this repository:
+
+\
+$ headers
+error: files in '/src/hello' carry notices of their own
+  info: libs/zlib/zlib.h
+  info: exclude third-party files with -spdx in .gitattributes
+  info: or add the header next to the notice by hand
+\
+
+While that didn't work out, it does make sense: \c{zlib.h} begins with the
+copyright notice of the zlib authors and our header has no business being
+there. Notice also that the files that do need the header, \c{hello.cxx}
+and the \c{buildfile}, were not changed either. \c{headers} does not change
+a repository until every file in it is accounted for.
+
+Since zlib is not ours, we exclude it by unsetting the \c{spdx} attribute
+for its directory in \c{.gitattributes} (we will discuss this in more
+detail in \l{#exclude Excluding Files}):
+
+\
+$ echo 'libs/zlib/** -spdx' >>.gitattributes
+$ git add .gitattributes
+$ git commit -m 'Exclude zlib from SPDX headers'
+\
+
+And now let's try again:
+
+\
+$ headers
+
+repository:   /src/hello
+license:      GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+source files: 2 (0 with the header)
+excluded:     1
+
+add the header to:
+  hello/buildfile
+  hello/hello.cxx
+
+add the header to 2 files in '/src/hello'? [y/n]: y
+\
+
+This time we get a plan, with the license expression for the license
+value of the manifest. Of the two source files neither has the header yet
+and one file, \c{zlib.h}, is excluded. \c{README.md} and \c{manifest} are
+not counted at all, since documentation and manifests need no header (see
+\l{#types File Types} for details).
+
+Once we answer \c{y}, \c{headers} adds the header to both files, each in
+its own comment syntax, and commits them:
+
+\
+$ head -4 hello/hello.cxx
+// Copyright (c) the IW4x authors (see the AUTHORS file).
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+
+#include <iostream>
+
+$ head -2 hello/buildfile
+# Copyright (c) the IW4x authors (see the AUTHORS file).
+# SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+\
+
+The commit subject is \c{Add SPDX headers} and the commit contains these
+files and nothing else, whatever else may be staged. If we run \c{headers}
+again, it finds that every source file has the header and exits without
+changing anything:
+
+\
+$ headers
+every source file in '/src/hello' has the header
+\
+
+The options are the same as those of \c{mailmap} and \c{authors} (see
+\l{headers(1)} for details) with one addition, \c{--license}, which we will
+come back to in \l{#license The License Expression}.
+
+\h1#types|File Types|
+
+\c{headers} establishes the type of every file git tracks from its name and
+extension. The type determines whether the file is a source file and, if
+it is, which comment syntax its header is written in. For example, C++ and
+CLI files take \c{//}, buildfiles and shell scripts take \c{#}, and HTML
+takes \c{<!-- -->} (see \l{headers(1)} for the complete list).
+
+Some files cannot carry a header (such as images, or JSON since it has no
+comments) and others don't need one since they are not source code (such
+as documentation and manifests). Such files are skipped and
+don't count as source files (see \l{headers(1)} for the complete list).
+
+The name of a file does not always give its type away and there are two
+rules for the common cases where it doesn't. A template (\c{*.in}) has the
+type of the file it is used to produce, so \c{hello.cxx.in} is a C++ file.
+And a file of otherwise unknown type that starts with a shebang line is a
+script and takes \c{#}.
+
+A file that none of this applies to is of unknown type and \c{headers}
+lists it and fails:
+
+\
+error: files of unknown type in '/src/hello'
+  info: data.frob
+  info: exclude them with -spdx in .gitattributes
+\
+
+The reason for this is that a file of a type nobody has considered may
+well be source code and skipping it would leave it without a header with
+nobody noticing. If this happens, then either the type is added to
+\c{headers} or, if the file does not need the header, the file is
+excluded.
+
+\h1#exclude|Excluding Files|
+
+A file is excluded if its \c{spdx} attribute is unset (in
+\c{.gitattributes}, the same way as any other git attribute). For
+example, to exclude a copied library as well as a single third-party
+header:
+
+\
+# Third-party code (see LEGAL).
+#
+libs/zlib/** -spdx
+lib/include/stb_truetype.hpp -spdx
+\
+
+Keeping the exclusions in \c{.gitattributes} means that they are versioned
+and reviewed along with the files they apply to and that everyone who runs
+\c{headers} on the repository gets the same result. Generated files that
+are kept in the repository are excluded the same way.
+
+Note that excluding a file only tells \c{headers} to leave it alone and
+says nothing about the file's license. The place that explains under what
+terms such files are distributed is the \c{LEGAL} file of the repository.
+
+\h1#notices|Existing Notices|
+
+Before writing the header into a source file, \c{headers} reads the file's
+leading comment, that is, the comment lines (and any blank lines between
+them) at the beginning of the file. If any of them mentions a copyright or
+license, then the file already carries a notice and \c{headers} lists it
+for review. Only the leading comment is considered, so a function called
+\c{has_license()} further down is not taken for a notice.
+
+A notice can belong to someone else, as is the case for a library that was
+copied into the repository, and then the file is excluded (see
+\l{#exclude Excluding Files}). Or it can be an older notice of our own, in
+which case we add the header by hand next to it and leave the notice as it
+is. \c{headers} accepts the header anywhere in the file, so it considers
+the following file to have it:
+
+\
+// Copyright (c) 2015 IW4x Team.
+//
+// Copyright (c) the IW4x authors (see the AUTHORS file).
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+\
+
+Note that \c{headers} never removes or rewrites a notice, and this includes
+a header of its own that it considers wrong. A header that lacks one of its
+lines or names another license expression is an error that is listed with
+the reason. Here is what this looks like in a repository licensed under
+MIT:
+
+\
+error: files in '/src/hello' have a wrong header
+  info: hello.cxx: license 'GPL-2.0-only', expected 'MIT'
+\
+
+\h1#architecture|How headers Works|
+
+In this chapter we look at where the license expression comes from and at
+how \c{headers} writes the header into a file.
+
+\h#license|The License Expression|
+
+The license expression comes from the \c{license} value of the manifest in
+the repository root or, if the repository has several packages, from the
+manifests of the packages listed in \c{packages.manifest} (in which case
+they must all have the same license). The license value itself is described
+in the \c{bpkg} manual (see \l{bpkg#manifest-package-license
+\c{license}}) and \c{headers} turns it into an expression as follows.
+
+A license in the SPDX scheme is already an SPDX license expression and is
+used as is, without the comment that may follow it. For example,
+\c{license: BSD-3-Clause ; Kept from upstream.} results in the
+\c{BSD-3-Clause} expression. The deprecated aliases that \c{bpkg} still
+recognizes, such as \c{GPLv3}, stand for their SPDX names.
+
+The IW4x license is written in the \c{other} scheme, where names compare
+case-insensitively, and it becomes the expression we saw in the
+introduction. Any other name in the \c{other} scheme has no expression and
+neither does a comma-separated list of names (all of which apply) or
+multiple license values (these leave the choice of the license to the user
+of the package). In all these
+cases the expression has to be specified with \c{--license}:
+
+\
+$ headers --license GPL-3.0-only
+\
+
+The same option is used for a repository without a manifest (such as one
+that is yet to be migrated to \c{build2}).
+
+Taking the expression from the manifest also means that the headers of a
+repository follow its license. For example, a repository whose contributors
+have not agreed to the IW4x Linking Exception has a manifest that says
+\c{GPL-3.0-only}, and its headers say the same.
+
+\h#placement|Placement|
+
+The header is written at the very beginning of the file, except for the
+lines that have to stay first. The byte order mark (if any) stays first and
+so does the shebang line (the system only recognizes it on the first
+line). In HTML and XML the XML declaration and the document type
+declaration stay first as well. A comment before \c{<!DOCTYPE html>}, for
+example, would put a browser into its quirks mode.
+
+The header is followed by an empty line, and any blank lines the file
+started with are dropped so that there is exactly one. In a man page the
+header is followed by an empty comment (\c{.\\\"}) since an empty line would
+appear in the output.
+
+The header is also written with the line endings of the file, so a file
+with CRLF line endings keeps them. And a file that does not end with a
+newline still does not end with one after the header is added.
+"

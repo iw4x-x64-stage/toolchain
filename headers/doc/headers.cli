@@ -1,0 +1,231 @@
+// Copyright (c) the IW4x authors (see the AUTHORS file).
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+
+include <string>;
+
+"\section=1"
+"\name=headers"
+"\summary=add SPDX header to git repository source files"
+
+namespace headers
+{
+  {
+    "<options> <dir> <expression>",
+
+    "\h|SYNOPSIS|
+
+     \c{\b{headers} [<options>] [<dir>]}
+
+     \h|DESCRIPTION|
+
+     The \cb{headers} command adds the SPDX header to the source files of a
+     git repository. The header names the copyright holder and the license of
+     the file and is written in the comment syntax of the file type, for
+     example:
+
+     \
+     // Copyright (c) the IW4x authors (see the AUTHORS file).
+     // SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+     \
+
+     The license expression comes from the \cb{license} value of the
+     repository manifest or, in a multi-package repository, of its package
+     manifests, which must agree. The IW4x license (\cb{other: GPL-3.0-only
+     with IW4x Linking Exception 1.1}) is written as the expression above and
+     an SPDX license expression is written as is. A repository without a
+     manifest needs the \cb{--license} option.
+
+     If <dir> is specified, then it should be a directory inside the working
+     tree of the repository to update or, with \cb{--all}, the directory to
+     search for repositories. Otherwise, the current working directory is
+     assumed.
+
+     Every file git tracks is either a source file, which must have the
+     header, or a file that cannot or need not carry one (see FILE TYPES
+     below for details). Symbolic links and submodules are skipped and a file
+     with the \cb{spdx} attribute unset is excluded, which is how third-party
+     and generated files are kept out. For example, in \cb{.gitattributes}:
+
+     \
+     deps/** -spdx
+     \
+
+     The header is only written into a file that carries no notice at all. A
+     file whose leading comment already mentions a copyright or license is
+     listed for review: it is either excluded or given the header by hand,
+     next to its notice, which is then accepted. Notices are never removed or
+     rewritten.
+
+     The command fails if a file is of an unknown type, if a file is to be
+     reviewed, or if a header is incomplete or names another license
+     expression, listing each file, for example:
+
+     \
+     error: files in '/src/hello' carry notices of their own
+       info: libs/zlib/zlib.h
+       info: exclude third-party files with -spdx in .gitattributes
+       info: or add the header next to the notice by hand
+     \
+
+     The update proceeds the same way as that of \cb{mailmap(1)}:
+
+     \ol|
+
+     \li|Prepare every repository: establish its license expression, inspect
+     its files, and establish that the files can be changed, committed, and,
+     if requested, pushed. If any repository fails to prepare, then nothing
+     is changed in any of them.|
+
+     \li|Print the plan: for each repository with files missing the header,
+     the license expression, the numbers of source and excluded files, where
+     the commit is pushed to, and the files to add the header to.|
+
+     \li|Ask for confirmation, unless \cb{--yes} is specified.|
+
+     \li|Add the header to each file, installing it with a single rename, then
+     commit and, if requested, push the files.||
+
+     For example:
+
+     \
+     $ headers
+
+     repository:   /src/hello
+     license:      GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+     source files: 2 (0 with the header)
+     excluded:     1
+
+     add the header to:
+       hello/buildfile
+       hello/hello.cxx
+
+     add the header to 2 files in '/src/hello'? [y/n]: y
+     \
+
+     The commit subject is \cb{Add SPDX headers}.
+
+     \h#file-types|FILE TYPES|
+
+     The type of a file is established from its name and extension and the
+     header is written in the comment syntax of the type:
+
+     \dl|
+
+     \li|\cb{//}
+
+     C, C++, CLI, Protocol Buffers, resource scripts, and the other C-like
+     languages.|
+
+     \li|\cb{#}
+
+     \cb{buildfile}, \cb{*.build}, \cb{testscript}, shell, Python, Perl,
+     Ruby, YAML, TOML, CMake, make, PowerShell, PO files, and \cb{.htaccess}.|
+
+     \li|\cb{--}
+
+     Lua and SQL.|
+
+     \li|\cb{/* */}
+
+     CSS, SCSS, and Less.|
+
+     \li|\cb{<!-- -->}
+
+     HTML, XHTML, and XML.|
+
+     \li|\cb{rem}
+
+     Windows batch files.||
+
+     Man pages (\cb{*.1} to \cb{*.9}) take the roff comment, \cb{.\\\"}.
+
+     Documentation (\cb{README}, \cb{NEWS}, Markdown), license texts,
+     \cb{AUTHORS}, \cb{LEGAL}, manifests, git configuration files, plain
+     text, JSON, and binary files (images, fonts, archives, executables,
+     and so on) cannot or need not carry the header.
+
+     A template (\cb{*.in}) has the type of the file it produces and a file
+     of otherwise unknown type that starts with a shebang line is a script.
+
+     The header goes at the beginning of the file, after the byte order
+     mark, the shebang line, and, in HTML and XML, the XML declaration and
+     the document type declaration. It is followed by an empty line (an
+     empty comment in a man page) and written with the line endings of the
+     file.
+     "
+  }
+
+  class options
+  {
+    "\h|OPTIONS|"
+
+    bool --all|-a
+    {
+      "Operate on every repository found under \i{dir}. Without this option,
+       the repository \i{dir} is in is operated on. The search does not
+       descend into a repository working tree, so nested repositories
+       (submodules, repositories checked out inside another one) are never
+       visited. Linked worktrees are skipped as well, since their repository
+       is visited through its main working tree. Hidden directories are
+       searched."
+    };
+
+    std::string --license
+    {
+      "<expression>",
+      "Use the SPDX license expression for the headers of every repository
+       operated on, whatever their manifests say. This is necessary for a
+       repository without a manifest."
+    };
+
+    bool --no-commit
+    {
+      "Don't commit the files the header is added to. By default, they are
+       committed and only they are, whatever else is staged."
+    };
+
+    bool --push
+    {
+      "Push the commit to the upstream of the current branch. To push exactly
+       this commit, the branch must not be ahead of its upstream before the
+       update. If the push fails, then the commit is kept and the rest of the
+       repositories are still updated."
+    };
+
+    bool --show-push
+    {
+      "Print the push command without executing it. This allows examining
+       the commit before pushing it. Note that the command is printed to
+       \cb{stdout}."
+    };
+
+    bool --print-only
+    {
+      "Print to \cb{stdout} what would be done without actually doing
+       anything."
+    };
+
+    bool --yes|-y
+    {
+      "Don't prompt for confirmation before adding the headers."
+    };
+
+    bool --help
+    {
+      "Print usage information and exit."
+    };
+
+    bool --version
+    {
+      "Print version and exit."
+    };
+  };
+
+  "
+  \h|EXIT STATUS|
+
+  Non-zero exit status is returned in case of an error, including when the
+  update is not confirmed. Nothing is changed in any repository if the error
+  is diagnosed before the confirmation.
+  "
+}
