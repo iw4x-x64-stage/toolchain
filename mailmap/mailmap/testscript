@@ -56,6 +56,18 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
   :
   $* --frobnicate r 2>'error: unknown option: --frobnicate' != 0
 
+  : push-show-push
+  :
+  $* --push --show-push r 2>'error: both --push and --show-push specified' != 0
+
+  : no-commit-push
+  :
+  $* --no-commit --push r 2>'error: --push specified with --no-commit' != 0
+
+  : no-commit-show-push
+  :
+  $* --no-commit --show-push r 2>'error: --show-push specified with --no-commit' != 0
+
   : all-dir-not-exist
   :
   {
@@ -332,7 +344,7 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
   :
   {
     $init repo &repo/***
-    $* --yes ../r repo 2>!
+    $* --yes --no-commit ../r repo 2>!
     cat repo/.mailmap >$header
   }
 
@@ -343,7 +355,7 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
   {
     $init repo &repo/***
     $commit --author 'Jane Doe <jane@example.org>'
-    $* --yes ../r repo 2>!
+    $* --yes --no-commit ../r repo 2>!
     cat repo/.mailmap >$header
   }
 
@@ -357,7 +369,7 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
     $commit --author 'jane <jane@example.org>'
     $commit --author 'J. Doe <jane@old.example.org>'
     $commit --author 'JD <JDoe@Example.com>'
-    $* --yes ../r repo 2>!
+    $* --yes --no-commit ../r repo 2>!
 
     cat repo/.mailmap >>"EOO"
       $header
@@ -381,7 +393,7 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
     $init repo &repo/***
     $commit --author 'John <shared@example.org>'
     $commit --author 'Rick <shared@example.org>'
-    $* --yes ../r repo 2>!
+    $* --yes --no-commit ../r repo 2>!
 
     git -C repo log --use-mailmap --format='%aN <%aE>' >>EOO
       Rick Poe <rick@example.org>
@@ -397,7 +409,7 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
     $init repo &repo/***
     $commit --author 'Jane Doe <jane@example.org>' \
       --trailer 'Co-authored-by: J. Doe <jane@old.example.org>'
-    $* --yes ../r repo 2>!
+    $* --yes --no-commit ../r repo 2>!
 
     cat repo/.mailmap >>"EOO"
       $header
@@ -413,7 +425,7 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
     $init repo &repo/***
     mkdir repo/sub
     $commit --author 'jane <jane@example.org>'
-    $* --yes ../r repo/sub 2>!
+    $* --yes --no-commit ../r repo/sub 2>!
 
     cat repo/.mailmap >>"EOO"
       $header
@@ -431,7 +443,7 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
     $commit --author 'Stranger <stranger@example.net>'
     $commit --author 'Jane Doe <jane@example.org>'
 
-    $* --yes ../r repo 2>>~%EOE% != 0
+    $* --yes --no-commit ../r repo 2>>~%EOE% != 0
       %error: history of '.+repo' has identities not in '../r'%
         info: Stranger <stranger@example.net>
       EOE
@@ -446,9 +458,9 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
   {
     $init repo &repo/***
     $commit --author 'jane <jane@example.org>'
-    $* --yes ../r repo 2>!
+    $* --yes --no-commit ../r repo 2>!
 
-    $* ../r repo 2>>~%EOE%
+    $* --no-commit ../r repo 2>>~%EOE%
       %'.+repo/\.mailmap' is up to date%
       EOE
   }
@@ -462,7 +474,7 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
     $commit --author 'jane <jane@example.org>'
     echo '# Mine.' >=repo/.mailmap
 
-    $* --yes ../r repo 2>>~%EOE% != 0
+    $* --yes --no-commit ../r repo 2>>~%EOE% != 0
       %error: '.+repo/\.mailmap' has uncommitted changes%
       EOE
 
@@ -477,10 +489,10 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
     $init repo &repo/***
     $commit --author 'jane <jane@example.org>'
 
-    $* ../r repo <'n' 2>! != 0
+    $* --no-commit ../r repo <'n' 2>! != 0
     test -f repo/.mailmap == 1
 
-    $* ../r repo <'y' 2>!
+    $* --no-commit ../r repo <'y' 2>!
     test -f repo/.mailmap
   }
 
@@ -492,7 +504,7 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
     $init repo &repo/***
     $commit --author 'jane <jane@example.org>'
 
-    $* ../r repo <:'' 2>>~%EOE% != 0
+    $* --no-commit ../r repo <:'' 2>>~%EOE% != 0
       %.*%*
       error: unable to read answer, use --yes to update without asking
       EOE
@@ -516,7 +528,7 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
     echo 'x' >=repo/x
     $g -C repo add x
 
-    $mailmap --yes --commit ../r repo 2>!
+    $mailmap --yes ../r repo 2>!
 
     git -C repo log -1 --format='%B' >>EOO
       Update .mailmap
@@ -543,12 +555,49 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
     $g -C repo commit --quiet --message 'Add .mailmap' \
       --author 'Jane Doe <jane@example.org>'
 
-    $mailmap --yes --commit ../r repo 2>!
+    $mailmap --yes ../r repo 2>!
 
     git -C repo log -1 --format='%B' >>EOO
       Update .mailmap
 
       EOO
+  }
+
+  : no-commit
+  :
+  : Test that --no-commit installs the .mailmap without committing it.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'jane <jane@example.org>'
+
+    $* -y --no-commit ../r repo 2>!
+
+    test -f repo/.mailmap
+    git -C repo log -1 --format='%s' >'Commit'
+    git -C repo status --porcelain >'?? .mailmap'
+  }
+
+  : print-only
+  :
+  : Test that --print-only prints the plan to stdout, asks nothing, and
+  : changes nothing.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'jane <jane@example.org>'
+
+    $mailmap --print-only ../r repo >>~%EOO%
+
+      %repository:         .+repo%
+      history identities: 1 (1 mapped)
+
+      +# Generated from the identity register by mailmap.
+      +Jane Doe <jane@example.org> <jane@example.org>
+      EOO
+
+    test -f repo/.mailmap == 1
+    git -C repo log -1 --format='%s' >'Commit'
   }
 
   : push
@@ -580,6 +629,30 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
         EOO
 
       git -C repo rev-list --count '@{upstream}..HEAD' >'0'
+    }
+
+    : show-push
+    :
+    : Test that --show-push commits and prints the push command, which pushes
+    : exactly the commit when executed.
+    :
+    {
+      $upstream &remote.git/***
+      $init repo &repo/***
+      $commit --author 'jane <jane@example.org>'
+      $track
+      $publish
+
+      $mailmap --yes --show-push ../../r repo 2>! | set cmd
+
+      echo "$cmd" >~'%git -C .+repo push origin HEAD:refs/heads/main%'
+
+      git -C remote.git log -1 --format='%s' main >'Commit'
+      git -C repo log -1 --format='%s' >'Update .mailmap'
+
+      bash -c "$cmd" 2>!
+
+      git -C remote.git log -1 --format='%s' main >'Update .mailmap'
     }
 
     : no-upstream
@@ -701,7 +774,7 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
 
       $g -C ws/a worktree add --quiet ../worktree &ws/worktree/***
 
-      $* --all --yes ../../r ws 2>>~%EOE%
+      $* --all --yes --no-commit ../../r ws 2>>~%EOE%
         %.*%*
         %warning: skipping linked worktree '.+/ws/worktree'%
         %.*%*
@@ -738,7 +811,7 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
       $g -C ws/b commit --quiet --allow-empty --message 'Commit' \
         --author 'jane <jane@example.org>'
 
-      $* --all --yes ../../r ws 2>>~%EOE% != 0
+      $* --all --yes --no-commit ../../r ws 2>>~%EOE% != 0
         %error: history of '.+/ws/a' has identities not in '../../r'%
           info: Stranger <stranger@example.net>
         error: 1 of 2 repositories failed, nothing changed
@@ -763,7 +836,7 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
       $g -C ws/b commit --quiet --allow-empty --message 'Commit' \
         --author 'jane <jane@example.org>'
 
-      $* --all ../../r ws <'n' 2>>:~%EOE% != 0
+      $* --all --no-commit ../../r ws <'n' 2>>:~%EOE% != 0
         %.*%*
         %update 2 \.mailmap files\? \[y/n\]: %
         EOE

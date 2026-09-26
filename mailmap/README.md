@@ -32,19 +32,16 @@ alias: J. Doe <jane@old.example.org>
 alias: <jdoe@example.com>
 ```
 
-To update the `.mailmap` of the repository in the current directory, showing
-the changes and asking for confirmation first:
+To update and commit the `.mailmap` of the repository in the current
+directory, showing the changes and asking for confirmation first:
 
 ```
 mailmap identities
 ```
 
-To also commit the update, with the added and removed entries listed in the
-commit message:
-
-```
-mailmap --commit identities
-```
+The commit message lists the entries the update adds and removes. To only
+update the file, pass `--no-commit`. To see what would be done without doing
+anything, pass `--print-only`.
 
 To also push the commit to the upstream of the current branch:
 
@@ -53,7 +50,8 @@ mailmap --push identities
 ```
 
 The branch must not be ahead of its upstream beforehand, so that the push
-carries only the `.mailmap` commit.
+carries only the `.mailmap` commit. To examine the commit before pushing it,
+pass `--show-push` instead, which prints the push command.
 
 To update every repository under a directory, for example the clones of all
 the repositories of an organization, with one confirmation for all of them:

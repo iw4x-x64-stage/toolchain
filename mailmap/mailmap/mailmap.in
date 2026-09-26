@@ -53,20 +53,33 @@
 #   once for all of them. A failure to push one of them does not prevent
 #   pushing the rest.
 #
-# --commit
+# --no-commit
 #
-#   Commit the updated .mailmap. Only the .mailmap is committed, whatever else
-#   is staged.
+#   Don't commit the updated .mailmap. By default, the .mailmap is committed
+#   and only it is, whatever else is staged. The commit message lists the
+#   entries the update adds and removes.
+#
+#   Note that the committer becomes one of the history identities and so the
+#   identity register must attribute them for the next update to succeed.
 #
 # --push
 #
-#   Push the commit to the upstream of the current branch. Implies --commit.
-#   To push exactly this commit, the branch must not be ahead of its upstream
-#   before the update.
+#   Push the commit to the upstream of the current branch. To push exactly
+#   this commit, the branch must not be ahead of its upstream before the
+#   update.
 #
-# --yes
+# --show-push
 #
-#   Do not ask for confirmation before updating the .mailmap.
+#   Print the push command instead of executing it. This allows examining the
+#   commit before pushing it. Note that the command is printed to stdout.
+#
+# --print-only
+#
+#   Print to stdout what would be done without actually doing anything.
+#
+# --yes|-y
+#
+#   Don't prompt for confirmation before updating the .mailmap.
 #
 # Arguments:
 #
@@ -99,8 +112,10 @@ function run () # <cmd> <arg>...
 }
 
 all=
-commit=
+commit=true
 push=
+show_push=
+print_only=
 yes=
 
 while [[ "$#" -gt 0 ]]; do
@@ -109,11 +124,13 @@ while [[ "$#" -gt 0 ]]; do
       info "$usage"
       info
       info "Options:"
-      info "  --all|-a   Operate on every repository found under <dir>."
-      info "  --commit   Commit the updated .mailmap."
-      info "  --push     Push the commit to the upstream, implies --commit."
-      info "  --yes      Do not ask for confirmation before updating."
-      info "  --version  Print version and exit."
+      info "  --all|-a      Operate on every repository found under <dir>."
+      info "  --no-commit   Don't commit the updated .mailmap."
+      info "  --push        Push the commit to the upstream."
+      info "  --show-push   Print the push command instead of executing it."
+      info "  --print-only  Print what would be done without doing anything."
+      info "  --yes|-y      Don't prompt for confirmation before updating."
+      info "  --version     Print version and exit."
       info
       info "See the comments at the beginning of $0 for details."
       exit 0
@@ -126,16 +143,23 @@ while [[ "$#" -gt 0 ]]; do
       all=true
       shift
       ;;
-    --commit)
-      commit=true
+    --no-commit)
+      commit=
       shift
       ;;
     --push)
-      commit=true
       push=true
       shift
       ;;
-    --yes)
+    --show-push)
+      show_push=true
+      shift
+      ;;
+    --print-only)
+      print_only=true
+      shift
+      ;;
+    -y|--yes)
       yes=true
       shift
       ;;
@@ -154,6 +178,20 @@ done
 
 if [[ "$#" -lt 1 || "$#" -gt 2 ]]; then
   error "$usage"
+fi
+
+if [[ "$push" && "$show_push" ]]; then
+  error "both --push and --show-push specified"
+fi
+
+if [[ ! "$commit" ]]; then
+  if [[ "$push" ]]; then
+    error "--push specified with --no-commit"
+  fi
+
+  if [[ "$show_push" ]]; then
+    error "--show-push specified with --no-commit"
+  fi
 fi
 
 identities="$1"
@@ -690,7 +728,7 @@ function prepare () # <index>
     return 0
   fi
 
-  if [[ ! "$push" ]]; then
+  if [[ ! "$push" && ! "$show_push" ]]; then
     return 0
   fi
 
@@ -845,35 +883,55 @@ if [[ "$failed" -ne 0 ]]; then
   exit 1
 fi
 
-# Show the changes and ask for confirmation.
+# Print what the update is going to do: the repositories whose .mailmap
+# is up to date and, for each of the rest, where the commit is pushed to
+# and the changes to the .mailmap. Also collect the latter in pending.
 #
 pending=()
 
-for ((i = 0; i != "${#repos[@]}"; ++i)); do
-  if [[ "${repo_state[$i]}" == "current" ]]; then
-    info "'${repos[$i]}/.mailmap' is up to date"
-    continue
-  fi
+function plan ()
+{
+  local i r
 
-  pending+=("$i")
+  for ((i = 0; i != "${#repos[@]}"; ++i)); do
+    r="${repos[$i]}"
 
-  info
-  info "repository:         ${repos[$i]}"
-  info "history identities: ${repo_identities[$i]} (${repo_mapped[$i]} mapped)"
+    if [[ "${repo_state[$i]}" == "current" ]]; then
+      echo "'$r/.mailmap' is up to date"
+      continue
+    fi
 
-  if [[ "$push" ]]; then
-    info "push to:            ${repo_remote[$i]} ${repo_merge[$i]#refs/heads/}"
-  fi
+    pending+=("$i")
 
-  info
+    echo
+    echo "repository:         $r"
+    echo "history identities: ${repo_identities[$i]} \
+(${repo_mapped[$i]} mapped)"
 
-  if [[ "${repo_state[$i]}" == "absent" ]]; then
-    sed -e 's/^/+/' "$tmp_dir/$i/mailmap" 1>&2
-  else
-    diff -u --label "a/.mailmap" --label "b/.mailmap" \
-      "${repos[$i]}/.mailmap" "$tmp_dir/$i/mailmap" 1>&2 || true
-  fi
-done
+    if [[ "$push" || "$show_push" ]]; then
+      echo "push to:            ${repo_remote[$i]} \
+${repo_merge[$i]#refs/heads/}"
+    fi
+
+    echo
+
+    if [[ "${repo_state[$i]}" == "absent" ]]; then
+      sed -e 's/^/+/' "$tmp_dir/$i/mailmap"
+    else
+      diff -u --label "a/.mailmap" --label "b/.mailmap" \
+        "$r/.mailmap" "$tmp_dir/$i/mailmap" || true
+    fi
+  done
+}
+
+if [[ "$print_only" ]]; then
+  plan
+  exit 0
+fi
+
+# Show the changes and ask for confirmation.
+#
+plan 1>&2
 
 if [[ "${#pending[@]}" -eq 0 ]]; then
   exit 0
@@ -911,6 +969,16 @@ for i in "${pending[@]}"; do
     failed=$((failed + 1))
   fi
 done
+
+# Print the push commands, quoted so that they can be executed as
+# printed.
+#
+if [[ "$show_push" ]]; then
+  for i in "${pending[@]}"; do
+    printf '%q ' git -C "${repos[$i]}" push "${repo_remote[$i]}"
+    printf '%q\n' "HEAD:${repo_merge[$i]}"
+  done
+fi
 
 if [[ "$failed" -ne 0 ]]; then
   exit 1
