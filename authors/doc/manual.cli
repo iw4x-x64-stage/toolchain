@@ -1,0 +1,282 @@
+// Copyright (c) the IW4x authors (see the AUTHORS file).
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+
+"\name=authors-manual"
+"\title=Manual"
+
+// NOTES
+//
+// - Maximum <pre> line is 70 characters.
+//
+
+"
+\h0#preface|Preface|
+
+This document describes \c{authors}, a tool for generating the \c{AUTHORS}
+files of git repositories from the identity register that \c{mailmap} uses.
+For the command line interface refer to the \l{authors(1)} man page.
+
+\h1#intro|Introduction|
+
+The \c{authors} tool generates the \c{AUTHORS} file of a git repository.
+This file lists everyone who contributed to the repository, each person
+once and by their preferred name, in alphabetical order (so that the list
+doesn't read as a ranking). It is what the copyright notice at the
+beginning of every source file refers to when it names \"the IW4x
+authors\" as the holder.
+
+The contributors are the people behind the identities that the history of
+the repository carries. Since the same person can appear in the history
+under several identities, \c{authors} attributes each identity to its
+person through the identity register, the same register that \c{mailmap}
+uses to generate the \c{.mailmap} file. The register also records how each
+person wants to be listed (see \l{#listing Listing People} for details).
+
+Note also that \c{AUTHORS} only grows: once it lists a person, \c{authors}
+keeps them listed whether or not the history carries them. This matters for
+a repository that is restarted (built anew with only the audited parts of
+an old repository), whose history starts from scratch even though the work
+of its earlier contributors comes over with the imported files.
+
+We begin with a walkthrough that generates the \c{AUTHORS} of a repository
+and keeps it up to date, and then look at how people are listed and at what
+\c{authors} does underneath in more detail.
+
+\h1#start|Getting Started|
+
+Let's start with the repository from the \c{mailmap} walkthrough, whose
+history has two identities for Jane, and the register that attributes both
+of them to her:
+
+\
+$ cd hello/
+$ git log --format='%an <%ae>'
+J. Doe <jane@old.example.org>
+jane <jane@example.org>
+
+$ cat ../identities
+: 1
+name: Jane Doe
+email: jane@example.org
+alias: J. Doe <jane@old.example.org>
+\
+
+The repository has no \c{AUTHORS} yet, so let's generate one:
+
+\
+$ authors ../identities
+
+repository:         /src/hello
+history identities: 2
+people listed:      1
+
++This file lists the IW4x authors, ...
+...
++Jane Doe
+
+update '/src/hello/AUTHORS'? [y/n]: y
+\
+
+The first lines tell us that the history carries two identities and that
+\c{AUTHORS} lists one person, since both identities are Jane's. Next comes
+the new file in the \c{diff(1)} notation. It starts with a preamble that
+says who the IW4x authors are (we have shortened it here) and ends with the
+entries, of which there is one: Jane, listed by her preferred name.
+
+Once we answer \c{y}, \c{authors} installs \c{AUTHORS} and commits it, the
+same way \c{mailmap} commits the \c{.mailmap}.
+
+Now let's say John contributes to the repository and would like his email
+to appear next to his name. And let's say a bot that keeps the dependencies
+up to date commits as well. We record both of them in the register:
+
+\
+: 1
+name: Jane Doe
+email: jane@example.org
+alias: J. Doe <jane@old.example.org>
+:
+name: John Roe
+email: john@example.org
+authors: email
+:
+name: Build Bot
+email: bot@example.org
+authors: none
+\
+
+The \c{authors} value says how the person is listed. John is listed with his
+email and the bot is not listed at all. Jane has no \c{authors} value and
+is listed by her name. Running \c{authors} again adds John:
+
+\
+$ authors ../identities
+
+repository:         /src/hello
+history identities: 5
+people listed:      2
+
+--- a/AUTHORS
++++ b/AUTHORS
+@@ -7,3 +7,4 @@
+ below once, by their preferred name, in alphabetical order:
+
+ Jane Doe
++John Roe <john@example.org>
+
+update '/src/hello/AUTHORS'? [y/n]: y
+\
+
+Notice that the history now carries five identities. Besides John and the
+bot there is Jane's own commit of \c{AUTHORS}, made as Jane Doe. The commit
+message lists the entries the update adds and removes:
+
+\
+$ git log -1 --format=%B
+Update AUTHORS
+
+  add    John Roe <john@example.org>
+\
+
+If we run \c{authors} again, it tells us that \c{AUTHORS} is up to date and
+exits without changing anything. And the same as with \c{mailmap}, an
+identity the register does not account for makes \c{authors} list it and
+fail:
+
+\
+$ authors ../identities
+error: history of '/src/hello' has identities not in '../identities'
+  info: Stranger <stranger@example.net>
+\
+
+The options are the same as those of \c{mailmap} (see \l{authors(1)} for
+details).
+
+\h1#listing|Listing People|
+
+The register is the one \c{mailmap} reads and its format and rules are
+described in the \c{mailmap} manual. For \c{authors} it has one more value,
+\c{authors}, which specifies how the person is listed:
+
+\dl|
+
+\li|\c{name}
+
+By the preferred name. This is the default and so most people don't need
+the value at all.|
+
+\li|\c{email}
+
+By the preferred name and email, in the \c{\i{name} <\i{email}>} form.|
+
+\li|\c{none}
+
+Not at all. This is the value for bots, as well as for anyone who asks not
+to be listed.||
+
+Since the value is the person's choice, it is recorded once (in the
+register) and every repository they contributed to lists them the same
+way. Changing
+it changes the entry in every \c{AUTHORS} on the next update.
+
+The entries must tell the people listed apart. Two people with the same name
+are listed with the same entry unless their emails appear, so \c{authors}
+refuses to list them by name alone:
+
+\
+error: people listed in '/src/hello/AUTHORS' cannot be told apart
+  info: Sam Poe
+  info: list them with 'authors: email' in 'identities'
+\
+
+\h1#architecture|How authors Works|
+
+In this chapter we look at where the people \c{authors} lists come from
+and at how it writes the file.
+
+\h#architecture-contributors|Contributors|
+
+The contributors of a repository are the people its history identities
+belong to. The history identities are the commit authors and the
+\c{Co-authored-by} trailer values in the history of \c{HEAD}, taken as git
+records them, the same as in \c{mailmap}. Each identity is attributed to its
+person the same way too: an alias with a name takes precedence, then the
+email alone, with names and emails compared case-insensitively. Since
+\c{mailmap} proves that the \c{.mailmap} it generates maps every identity
+to exactly this person, \c{AUTHORS} and \c{.mailmap} always attribute an
+identity to the same person.
+
+Note that it is the author of a commit that counts, so a commit applied by
+someone else (for example, a rebased pull request) credits its author
+only.
+
+\h#architecture-entries|Existing Entries|
+
+Before writing \c{AUTHORS}, \c{authors} reads the entries of the existing
+file and adds the people they belong to. An entry with an email,
+\c{Jane Doe <jane@example.org>} for example, is attributed like a history
+identity. An entry without an email is attributed by name: it belongs to
+the person whose preferred name or name alias it is, provided there is
+exactly one such person. As a result, an entry that names Jane by an old
+name (\c{J. Doe}, for example) still belongs to her.
+
+Every entry is then written the way the register currently lists its
+person. If Jane changes her name in the register, then her entry follows
+on the next update. A person only leaves \c{AUTHORS} if the register says
+\c{authors: none} for them.
+
+An entry that the register does not attribute is an error, the same as an
+unattributed history identity. If an entry without an email could be more
+than one person, then this is an error as well and \c{authors} lists the
+people it matches (their entries need their emails to tell them apart).
+
+\h#architecture-file|The File|
+
+\c{AUTHORS} starts with a fixed preamble, followed by an empty line and the
+entries, one per line. The entries are unique and sorted case-insensitively
+in the bytewise order, which is the same on every machine, whatever its
+locale. As a result, running \c{authors} again without changes to the
+history or the register produces the same file, byte for byte, and an
+\c{AUTHORS} that is up to date is left alone.
+
+The preamble is also how \c{authors} recognizes the file as its own. If an
+\c{AUTHORS} does not start with the preamble, then there is no telling
+where its entries are and \c{authors} leaves the file alone, asking for the
+entries to be put after the preamble:
+
+\
+error: '/src/hello/AUTHORS' does not start with the AUTHORS preamble
+  info: put the entries to keep after the preamble or remove the file
+\
+
+Installing \c{AUTHORS} replaces the file, which would turn a symbolic link
+into a copy of its target. As a result, an \c{AUTHORS} that is a symbolic
+link (for example, in a package directory, pointing to the \c{AUTHORS} of
+the repository) is refused and it is the file it refers to that should be
+updated.
+
+\h1#restart|Restarted Repositories|
+
+When a repository is restarted, its new history begins with the first
+commit of the new repository and does not carry the people who contributed
+to the old one. Their contributions are still there, in the files that were
+imported, and so the new \c{AUTHORS} needs to list them as well.
+
+To do that, we seed the new \c{AUTHORS} with the people of the old
+repository. The simplest way is to start from the old repository's
+\c{AUTHORS}, if it was generated by \c{authors}, since its entries are
+already in the right form. Otherwise, we write the preamble followed by one
+entry per contributor, for example, taken from \c{git shortlog} of the
+imported files:
+
+\
+$ git -C ../old shortlog -sne HEAD -- src/ | cut -f 2
+Jane Doe <jane@example.org>
+John Roe <john@example.org>
+\
+
+We then run \c{authors} as usual. The seeded entries are attributed
+through the register and written the way it lists their people, and the
+contributors of the new history are added to them. From then on the seeded
+people stay listed on every update, since \c{AUTHORS} only grows.
+"

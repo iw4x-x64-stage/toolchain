@@ -1,0 +1,208 @@
+// Copyright (c) the IW4x authors (see the AUTHORS file).
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
+
+"\section=1"
+"\name=authors"
+"\summary=generate git repository AUTHORS from identity register"
+
+namespace authors
+{
+  {
+    "<options> <identities> <dir>",
+
+    "\h|SYNOPSIS|
+
+     \c{\b{authors} [<options>] <identities> [<dir>]}
+
+     \h|DESCRIPTION|
+
+     The \cb{authors} command updates the \cb{AUTHORS} file of a git
+     repository so that it lists every person who contributed to the
+     repository once, by their preferred name, in alphabetical order. The
+     contributors are the people the identities (name and email) of the
+     repository history belong to, as recorded in the identity register
+     <identities> (see ENTRIES below for details). The history identities are
+     the commit authors and the \cb{Co-authored-by} trailer values.
+
+     If <dir> is specified, then it should be a directory inside the working
+     tree of the repository to update or, with \cb{--all}, the directory to
+     search for repositories. Otherwise, the current working directory is
+     assumed.
+
+     \cb{AUTHORS} starts with a fixed preamble that says who the IW4x
+     authors are, followed by one entry per person, sorted
+     case-insensitively in the bytewise order so the order is the same on
+     every machine. \cb{AUTHORS} only grows: the people it already lists stay
+     listed, whether or not the history carries them.
+
+     The update proceeds the same way as that of \l{mailmap(1)}:
+
+     \ol|
+
+     \li|Prepare every repository: generate its \cb{AUTHORS} and establish
+     that it can be installed, committed, and, if requested, pushed. If any
+     repository fails to prepare, then nothing is changed in any of them.|
+
+     \li|Print the plan: for each repository whose \cb{AUTHORS} is not up to
+     date, the number of history identities, the number of people listed,
+     where the commit is pushed to, and the changes to \cb{AUTHORS}.|
+
+     \li|Ask for confirmation, unless \cb{--yes} is specified.|
+
+     \li|Install each \cb{AUTHORS} with a single rename, then commit and, if
+     requested, push it.||
+
+     For example, to update and commit the \cb{AUTHORS} of the repository in
+     the current working directory:
+
+     \
+     $ authors identities
+
+     repository:         /src/hello
+     history identities: 5
+     people listed:      2
+
+     --- a/AUTHORS
+     +++ b/AUTHORS
+     @@ -7,3 +7,4 @@
+      below once, by their preferred name, in alphabetical order:
+
+      Jane Doe
+     +John Roe <john@example.org>
+
+     update '/src/hello/AUTHORS'? [y/n]: y
+     \
+
+     The commit subject is \cb{Update AUTHORS} and its message body lists the
+     entries the update adds and removes, for example:
+
+     \
+     Update AUTHORS
+
+       add    John Roe <john@example.org>
+     \
+
+     \h#entries|ENTRIES|
+
+     The identity register is the one \l{mailmap(1)} reads (see its IDENTITY
+     REGISTER section for the format and the rules). Its \cb{authors} value
+     specifies how \cb{AUTHORS} lists the person:
+
+     \dl|
+
+     \li|\cb{name}
+
+     By the preferred name. This is the default.|
+
+     \li|\cb{email}
+
+     By the preferred name and email.|
+
+     \li|\cb{none}
+
+     Not at all, for example, a bot.||
+
+     For example:
+
+     \
+     : 1
+     name: Jane Doe
+     email: jane@example.org
+     :
+     name: John Roe
+     email: john@example.org
+     authors: email
+     :
+     name: Build Bot
+     email: bot@example.org
+     authors: none
+     \
+
+     Each history identity is attributed to its person the same way
+     \l{mailmap(1)} maps it. Each entry \cb{AUTHORS} already lists is
+     attributed the same way, by its name and email or, if it has no email,
+     by a name the register records for exactly one person. The entry is then
+     written the way the register currently lists its person, so a person
+     leaves \cb{AUTHORS} only through \cb{authors: none}.
+
+     Every history identity and every entry must be attributed. The command
+     fails if the register does not attribute some of them, listing each
+     one, for example:
+
+     \
+     error: history of '/src/hello' has identities not in 'identities'
+       info: Stranger <stranger@example.net>
+     \
+
+     The people listed must also be told apart by their entries. Two people
+     with the same name are refused unless the register lists them with
+     \cb{authors: email}.
+     "
+  }
+
+  class options
+  {
+    "\h|OPTIONS|"
+
+    bool --all|-a
+    {
+      "Operate on every repository found under \i{dir}. Without this option,
+       the repository \i{dir} is in is operated on. The search does not
+       descend into a repository working tree, so nested repositories
+       (submodules, repositories checked out inside another one) are never
+       visited. Linked worktrees are skipped as well, since their repository
+       is visited through its main working tree. Hidden directories are
+       searched."
+    };
+
+    bool --no-commit
+    {
+      "Don't commit the updated \cb{AUTHORS}. By default, \cb{AUTHORS} is
+       committed and only it is, whatever else is staged."
+    };
+
+    bool --push
+    {
+      "Push the commit to the upstream of the current branch. To push exactly
+       this commit, the branch must not be ahead of its upstream before the
+       update. If the push fails, then the commit is kept and the rest of the
+       repositories are still updated."
+    };
+
+    bool --show-push
+    {
+      "Print the push command without executing it. This allows examining
+       the commit before pushing it. Note that the command is printed to
+       \cb{stdout}."
+    };
+
+    bool --print-only
+    {
+      "Print to \cb{stdout} what would be done without actually doing
+       anything."
+    };
+
+    bool --yes|-y
+    {
+      "Don't prompt for confirmation before updating \cb{AUTHORS}."
+    };
+
+    bool --help
+    {
+      "Print usage information and exit."
+    };
+
+    bool --version
+    {
+      "Print version and exit."
+    };
+  };
+
+  "
+  \h|EXIT STATUS|
+
+  Non-zero exit status is returned in case of an error, including when the
+  update is not confirmed. Nothing is changed in any repository if the error
+  is diagnosed before the confirmation.
+  "
+}
