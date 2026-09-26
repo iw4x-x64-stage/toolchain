@@ -3,46 +3,668 @@
 # Copyright (c) the IW4x authors (see the AUTHORS file).
 # SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
 
-# Map contributor identities to one preferred name and address.
+# Update the .mailmap file of a git repository from the identity register.
+#
+# The identities (name and email) a repository history carries are the commit
+# authors and the Co-authored-by trailer values. The .mailmap maps each of
+# them to the "preferred identity" of the person it belongs to, as recorded in
+# the identity register.
+#
+# The identity register is a manifest list with one manifest per person:
+#
+#   : 1
+#   name: Jane Doe
+#   email: jane@example.org
+#   alias: J. Doe <jane@old.example.org>
+#   alias: <jdoe@example.com>
+#
+# The name and email values specify the preferred identity. An alias in the
+# '<name> <<email>>' form matches the identity with this name and email and in
+# the '<<email>>' form every identity with this email. An identity is matched
+# the same way git applies a .mailmap entry to it: an alias with a name takes
+# precedence and names and emails compare case-insensitively.
+#
+# The register must attribute each identity to at most one person, which
+# holds if:
+#
+#   - an email, preferred or aliased, belongs to one person
+#   - a name at an email belongs to one person
+#   - a name alias matches no other person's preferred identity
+#   - an alias is not covered by its person's own emails
+#
+# Every history identity must be attributed. Before the .mailmap is written,
+# git-check-mailmap(1) confirms that it maps every identity to its person.
+#
+# The .mailmap is generated as a whole and replaces the existing one. Changes
+# to it belong in the identity register.
 #
 # Options:
 #
-# --help
+# --check
 #
-#   Print usage information and exit.
+#   Check that the .mailmap is up to date without changing anything. Fail if
+#   it differs from the generated one or does not exist.
 #
-# --version
+# --commit
 #
-#   Print version and exit.
+#   Commit the updated .mailmap. Only the .mailmap is committed, whatever else
+#   is staged.
 #
-usage="usage: $0 [<options>]"
+# --yes
+#
+#   Do not ask for confirmation before updating the .mailmap.
+#
+# Arguments:
+#
+# <identities>  The identity register file.
+#
+# <dir>         A directory in the repository working tree. If not specified,
+#               the current directory is assumed.
+#
+usage="usage: $0 [<options>] <identities> [<dir>]"
 
-trap "{ exit 1; }" ERR
-set -o errtrace # Trap ERR in functions.
-set -o pipefail # Fail if any pipeline command fails.
+owd="$(pwd)"
+trap "{ cd '$owd'; exit 1; }" ERR
+set -o errtrace     # Trap in functions and subshells.
+set -o pipefail     # Fail if any pipeline command fails.
+shopt -s lastpipe   # Execute last pipeline command in the current shell.
 
-# Diagnostics.
-#
-function info ()  { echo "$*" 1>&2; }
+@import libbutl.bash/manifest-parser@
+
+function info () { echo "$*" 1>&2; }
 function error () { info "error: $*"; exit 1; }
 
-while [ "$#" -gt 0 ]; do
+# Trace and run a command, making git diagnostics distinguishable from
+# ours.
+#
+function run () # <cmd> <arg>...
+{
+  info "+ $*"
+  "$@"
+}
+
+mode=update
+commit=
+yes=
+
+while [[ "$#" -gt 0 ]]; do
   case "$1" in
-    --help)
-      echo "$usage"
+    -h|--help)
+      info "$usage"
+      info
+      info "Options:"
+      info "  --check    Check that .mailmap is up to date without changing it."
+      info "  --commit   Commit the updated .mailmap."
+      info "  --yes      Do not ask for confirmation before updating."
+      info "  --version  Print version and exit."
+      info
+      info "See the comments at the beginning of $0 for details."
       exit 0
       ;;
     --version)
       echo "mailmap @version@"
       exit 0
       ;;
-    -*)
-      error "unknown option '$1'"
+    --check)
+      mode=check
+      shift
       ;;
+    --commit)
+      commit=true
+      shift
+      ;;
+    --yes)
+      yes=true
+      shift
+      ;;
+    # Catch invalid options.
+    #
+    -*)
+      error "unknown option: $1"
+      ;;
+    # <identities> or end of options.
+    #
     *)
-      error "unexpected argument '$1'"
+      break
       ;;
   esac
 done
 
-error "$usage"
+if [[ "$#" -lt 1 || "$#" -gt 2 ]]; then
+  error "$usage"
+fi
+
+if [[ "$mode" == "check" && "$commit" ]]; then
+  error "--commit specified with --check"
+fi
+
+identities="$1"
+
+if [[ ! -f "$identities" ]]; then
+  error "'$identities' does not exist or is not a file"
+fi
+
+dir="${2:-$owd}"
+dir="${dir%/}"
+
+if [[ ! -d "$dir" ]]; then
+  error "'$dir' does not exist or is not a directory"
+fi
+
+if ! command -v git >/dev/null; then
+  error "unable to execute git: command not found"
+fi
+
+# The repository working tree root, so that the .mailmap path does not depend
+# on where in the working tree we were pointed.
+#
+if ! repo="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)"; then
+  error "'$dir' is not inside a git working tree"
+fi
+
+mailmap="$repo/.mailmap"
+
+# Make sure that git commands fail instead of prompting for
+# authentication and don't run maintenance tasks or start daemons.
+#
+export GIT_TERMINAL_PROMPT=0
+
+val="\
+'maintenance.autoDetach=false' \
+'gc.autoDetach=false' \
+'core.fsmonitor=false' \
+'credential.helper='"
+
+if [[ -n "$GIT_CONFIG_PARAMETERS" ]]; then
+  val="$val $GIT_CONFIG_PARAMETERS"
+fi
+
+export GIT_CONFIG_PARAMETERS="$val"
+
+# The identity register.
+#
+# People and their aliases are indexed in the order they appear, with an
+# empty name for an email alias. The maps are keyed by the lower-cased
+# email (email_*) or by the lower-cased name and email joined with a
+# newline, which neither can contain (identity_*, preferred_*).
+#
+people=0
+person_name=()
+person_email=()
+
+aliases=0
+alias_person=()
+alias_name=()
+alias_email=()
+
+declare -A email_person=()     # Person of a preferred or aliased email.
+declare -A email_spelling=()   # Email as spelled in the register.
+declare -A identity_alias=()   # Alias of a name alias identity.
+declare -A preferred_person=() # Person of a preferred identity.
+
+# Print the map key of the name and email.
+#
+function key () # <name> <email>
+{
+  local n="${1,,}"
+  local e="${2,,}"
+
+  echo "$n"$'\n'"$e"
+}
+
+# Split the identity in the '<name> <<email>>' or '<<email>>' form into
+# the id_name and id_email variables, with id_name empty in the latter
+# form. Return 1 if the identity is in neither form.
+#
+function parse_identity () # <identity>
+{
+  local re='^(([^<>]*[^<>[:space:]])[[:space:]]+)?[<]([^<>[:space:]]+)[>]$'
+
+  if [[ ! "$1" =~ $re ]]; then
+    return 1
+  fi
+
+  id_name="${BASH_REMATCH[2]}"
+  id_email="${BASH_REMATCH[3]}"
+}
+
+# Add the person and their aliases to the register. Fail if this
+# violates the register rules.
+#
+function add_person () # <name> <email> <alias>...
+{
+  local n="$1"
+  local e="$2"
+  shift 2
+
+  local name_re='^[^<>[:space:]]([^<>]*[^<>[:space:]])?$'
+  local email_re='^[^<>@[:space:]]+@[^<>@[:space:]]+$'
+
+  if [[ ! "$n" =~ $name_re ]]; then
+    error "invalid name '$n' in '$identities'"
+  fi
+
+  if [[ ! "$e" =~ $email_re ]]; then
+    error "invalid email '$e' of '$n' in '$identities'"
+  fi
+
+  local k="${e,,}"
+
+  if [[ -n "${email_person[$k]+x}" ]]; then
+    info "error: email '$e' belongs to multiple people in '$identities'"
+    info "  info: '${person_name[${email_person[$k]}]}' and '$n'"
+    exit 1
+  fi
+
+  local p="$people"
+
+  person_name+=("$n")
+  person_email+=("$e")
+  email_person["$k"]="$p"
+  email_spelling["$k"]="$e"
+  preferred_person["$(key "$n" "$e")"]="$p"
+
+  local a o
+  for a in "$@"; do
+    if ! parse_identity "$a"; then
+      error "invalid alias '$a' of '$n' in '$identities'"
+    fi
+
+    if [[ -z "$id_name" ]]; then
+
+      # An email alias covers every name at the email.
+      #
+      k="${id_email,,}"
+
+      if [[ -n "${email_person[$k]+x}" ]]; then
+        o="${email_person[$k]}"
+
+        if [[ "$o" -eq "$p" ]]; then
+          error "alias '$a' of '$n' repeats their email in '$identities'"
+        fi
+
+        info "error: email '$id_email' belongs to multiple people in \
+'$identities'"
+        info "  info: '${person_name[$o]}' and '$n'"
+        exit 1
+      fi
+
+      email_person["$k"]="$p"
+      email_spelling["$k"]="$id_email"
+    else
+      if [[ "${id_email,,}" == "${e,,}" ]]; then
+        error "alias '$a' of '$n' is covered by their email in '$identities'"
+      fi
+
+      k="$(key "$id_name" "$id_email")"
+
+      if [[ -n "${identity_alias[$k]+x}" ]]; then
+        o="${alias_person[${identity_alias[$k]}]}"
+
+        info "error: alias '$a' belongs to multiple people in '$identities'"
+        info "  info: '${person_name[$o]}' and '$n'"
+        exit 1
+      fi
+
+      identity_alias["$k"]="$aliases"
+    fi
+
+    alias_person+=("$p")
+    alias_name+=("$id_name")
+    alias_email+=("$id_email")
+    aliases=$((aliases + 1))
+  done
+
+  people=$((people + 1))
+}
+
+# Load the identity register. Fail if it violates the register rules.
+#
+function load_identities ()
+{
+  local n v
+  local name email named mailed started end
+  local as=()
+
+  butl_manifest_parser_start "$identities"
+
+  # The version pair (an empty name) that opens each manifest in the
+  # list closes the person before it, and the end of the list closes the
+  # last one.
+  #
+  while true; do
+    if IFS=: read -ru "$butl_manifest_parser_ofd" -d '' n v; then
+      end=
+    else
+      n=
+      end=true
+    fi
+
+    if [[ -z "$n" ]]; then
+      if [[ "$started" ]]; then
+        if [[ ! "$named" ]]; then
+          error "person without name in '$identities'"
+        fi
+
+        if [[ ! "$mailed" ]]; then
+          error "person '$name' without email in '$identities'"
+        fi
+
+        add_person "$name" "$email" "${as[@]}"
+      fi
+
+      if [[ "$end" ]]; then
+        break
+      fi
+
+      name= email= named= mailed= started=
+      as=()
+      continue
+    fi
+
+    started=true
+
+    case "$n" in
+      name)
+        if [[ "$named" ]]; then
+          error "person '$name' has multiple names in '$identities'"
+        fi
+
+        name="$v"
+        named=true
+        ;;
+      email)
+        if [[ "$mailed" ]]; then
+          error "person with email '$email' has multiple emails in \
+'$identities'"
+        fi
+
+        email="$v"
+        mailed=true
+        ;;
+      alias)
+        as+=("$v")
+        ;;
+      *)
+        error "unknown value '$n' in '$identities'"
+        ;;
+    esac
+  done
+
+  butl_manifest_parser_finish
+
+  # Check the name aliases against the complete register.
+  #
+  # Note that an email alias of one person and a name alias of another
+  # may refer to the same email. This is how two people who committed
+  # with a shared email are told apart (and git resolves it the same
+  # way).
+  #
+  local i p k a
+  for ((i = 0; i != aliases; ++i)); do
+    if [[ -z "${alias_name[$i]}" ]]; then
+      continue
+    fi
+
+    p="${alias_person[$i]}"
+    a="${alias_name[$i]} <${alias_email[$i]}>"
+
+    # A name alias takes precedence over an email, so one that matches
+    # another person's preferred identity would take their commits away
+    # from them.
+    #
+    k="$(key "${alias_name[$i]}" "${alias_email[$i]}")"
+
+    if [[ -n "${preferred_person[$k]+x}" ]]; then
+      info "error: alias '$a' of '${person_name[$p]}' is the preferred \
+identity of '${person_name[${preferred_person[$k]}]}'"
+      info "  info: in '$identities'"
+      exit 1
+    fi
+
+    k="${alias_email[$i],,}"
+
+    if [[ -n "${email_person[$k]+x}" && "${email_person[$k]}" -eq "$p" ]]
+    then
+      error "alias '$a' of '${person_name[$p]}' is covered by their email \
+alias in '$identities'"
+    fi
+  done
+}
+
+# Print the distinct identities the repository history carries, one per
+# line in the bytewise order. A repository without commits carries none.
+#
+function history_identities ()
+{
+  if ! git -C "$repo" rev-parse --verify --quiet HEAD >/dev/null; then
+    return 0
+  fi
+
+  {
+    git -C "$repo" log --format='%an <%ae>' HEAD
+    git -C "$repo" log \
+      --format='%(trailers:key=Co-authored-by,valueonly,unfold)' HEAD
+  } | sed -e '/^$/d' | LC_ALL=C sort -u
+}
+
+# Generate the .mailmap into the file and set the identities_count and mapped
+# variables to the number of history identities and of those that git maps
+# with it. Fail if the register does not attribute some history identity.
+#
+# The .mailmap has an entry for each name alias a history identity
+# matches and for each email a history identity carries under a name or
+# spelling that differs from its person's preferred identity. The
+# entries are unique and in the bytewise order, so the same history and
+# register always produce the same file.
+#
+function generate () # <file>
+{
+  local f="$1"
+
+  local es=() # Entries.
+  local us=() # Unattributed identities.
+  local qs=() # Identities git is queried with.
+  local ws=() # Preferred identities git must answer with.
+
+  local hs=()
+  history_identities | readarray -t hs
+
+  identities_count="${#hs[@]}"
+
+  local h k p j
+  for h in "${hs[@]}"; do
+
+    # The Co-authored-by value is recorded as written, so it may not be
+    # an identity at all, and then neither we nor git can map it.
+    #
+    if ! parse_identity "$h" || [[ -z "$id_name" ]]; then
+      info "warning: '$h' in the history of '$repo' is not an identity"
+      continue
+    fi
+
+    k="$(key "$id_name" "$id_email")"
+
+    if [[ -n "${identity_alias[$k]+x}" ]]; then
+      j="${identity_alias[$k]}"
+      p="${alias_person[$j]}"
+
+      es+=("${person_name[$p]} <${person_email[$p]}> \
+${alias_name[$j]} <${alias_email[$j]}>")
+
+    elif [[ -n "${email_person[${id_email,,}]+x}" ]]; then
+      p="${email_person[${id_email,,}]}"
+
+      if [[ "$id_name"  != "${person_name[$p]}" ||
+            "$id_email" != "${person_email[$p]}" ]]; then
+        es+=("${person_name[$p]} <${person_email[$p]}> \
+<${email_spelling[${id_email,,}]}>")
+      fi
+    else
+      us+=("$h")
+      continue
+    fi
+
+    qs+=("$h")
+    ws+=("${person_name[$p]} <${person_email[$p]}>")
+  done
+
+  if [[ "${#us[@]}" -ne 0 ]]; then
+    info "error: history of '$repo' has identities not in '$identities'"
+
+    for h in "${us[@]}"; do
+      info "  info: $h"
+    done
+
+    exit 1
+  fi
+
+  {
+    echo "# Generated from the identity register by mailmap."
+
+    if [[ "${#es[@]}" -ne 0 ]]; then
+      printf '%s\n' "${es[@]}" | LC_ALL=C sort -u
+    fi
+  } >"$f"
+
+  mapped="${#qs[@]}"
+
+  if [[ "$mapped" -eq 0 ]]; then
+    return 0
+  fi
+
+  # Query git in an empty repository that ignores the global and system
+  # configuration, so the generated file is the only mailmap it reads.
+  #
+  local d="$tmp_dir/check"
+
+  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git init --quiet "$d"
+  cp "$f" "$d/.mailmap"
+
+  local rs=()
+  printf '%s\n' "${qs[@]}" |
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+    git -C "$d" check-mailmap --stdin | readarray -t rs
+
+  local i
+  for ((i = 0; i != mapped; ++i)); do
+    if [[ "${rs[$i]}" != "${ws[$i]}" ]]; then
+      info "error: generated .mailmap maps '${qs[$i]}' to '${rs[$i]}'"
+      info "  info: '$identities' attributes it to '${ws[$i]}'"
+      exit 1
+    fi
+  done
+}
+
+# Print the entries of the .mailmap file, one per line in the bytewise
+# order, skipping comments and blank lines.
+#
+function entries () # <file>
+{
+  if [[ -f "$1" ]]; then
+    sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$1" | LC_ALL=C sort -u
+  fi
+}
+
+tmp_dir="$(mktemp -d)"
+trap "{ rm -rf '$tmp_dir'; }" EXIT
+
+load_identities
+generate "$tmp_dir/mailmap"
+
+if [[ ! -f "$mailmap" ]]; then
+  state="absent"
+elif cmp -s "$tmp_dir/mailmap" "$mailmap"; then
+  state="current"
+else
+  state="stale"
+fi
+
+if [[ "$mode" == "check" ]]; then
+  if [[ "$state" != "current" ]]; then
+    info "error: '$mailmap' is $state"
+    info "  info: run $(basename "$0") without --check to update it"
+    exit 1
+  fi
+
+  exit 0
+fi
+
+if [[ "$state" == "current" ]]; then
+  info "'$mailmap' is up to date"
+  exit 0
+fi
+
+# Refuse to replace uncommitted changes to the .mailmap, since they would be
+# lost, and make sure the commit can be made before we change anything.
+#
+if [[ -n "$(git -C "$repo" status --porcelain -- .mailmap)" ]]; then
+  error "'$mailmap' has uncommitted changes"
+fi
+
+if [[ "$commit" ]] && ! git -C "$repo" var GIT_COMMITTER_IDENT \
+                          >/dev/null 2>&1; then
+  info "error: no git identity to commit to '$repo' with"
+  info "  info: configure user.name and user.email"
+  exit 1
+fi
+
+# Show the changes and ask for confirmation.
+#
+info "history identities: $identities_count ($mapped mapped)"
+info
+
+if [[ "$state" == "absent" ]]; then
+  sed -e 's/^/+/' "$tmp_dir/mailmap" 1>&2
+else
+  diff -u --label "a/.mailmap" --label "b/.mailmap" \
+    "$mailmap" "$tmp_dir/mailmap" 1>&2 || true
+fi
+
+info
+
+while [[ ! "$yes" ]]; do
+  if ! read -p "update '$mailmap'? [y/n]: " opt; then
+    info
+    error "unable to read answer, use --yes to update without asking"
+  fi
+
+  case "$opt" in
+    y) yes=true ;;
+    n) exit 1   ;;
+  esac
+done
+
+# Compose the commit message, listing the entries the update adds and removes
+# in the message body.
+#
+if [[ "$commit" ]]; then
+  entries "$mailmap" >"$tmp_dir/old"
+  entries "$tmp_dir/mailmap" >"$tmp_dir/new"
+
+  body="$(
+    LC_ALL=C comm -13 "$tmp_dir/old" "$tmp_dir/new" | sed -e 's/^/  add    /'
+    LC_ALL=C comm -23 "$tmp_dir/old" "$tmp_dir/new" | sed -e 's/^/  remove /'
+  )"
+
+  {
+    echo "Update .mailmap"
+
+    if [[ -n "$body" ]]; then
+      echo
+      echo "$body"
+    fi
+  } >"$tmp_dir/message"
+fi
+
+# Install the .mailmap with a single rename, so no reader observes it partially
+# written.
+#
+run cp "$tmp_dir/mailmap" "$mailmap.tmp"
+run mv -f "$mailmap.tmp" "$mailmap"
+
+if [[ "$commit" ]]; then
+  run git -C "$repo" add -- .mailmap >&2
+  run git -C "$repo" commit --quiet --only --file "$tmp_dir/message" \
+    -- .mailmap >&2
+fi

@@ -1,20 +1,56 @@
 # mailmap - Contributor identity mapping for IW4x projects.
 
-`mailmap` maintains the `.mailmap` file of IW4x repositories, which maps the
-names and addresses a contributor has committed under to one preferred
-identity. This version provides the command line only. The mapping itself is
-not implemented yet.
+`mailmap` updates the `.mailmap` file of a git repository from an identity
+register, which lists each contributor with their preferred name and email
+and the other identities they committed under. Every author and
+`Co-authored-by` identity in the history is mapped to the preferred identity
+of its person, and `mailmap` fails if the register does not account for one.
 
 ## Usage
 
-`mailmap` requires bash 4.3 or later. To build and install it with `bpkg`:
+`mailmap` requires bash 4.3 or later and a C++ compiler to build. To build
+and install it with `bpkg`:
 
 ```
-bpkg create -d mailmap-host --
+bpkg create -d mailmap-host cc config.cxx=g++ config.bin.lib=static
 bpkg build -d mailmap-host \
   mailmap@https://github.com/iw4x-x64-stage/toolchain.git#main
 bpkg install -d mailmap-host \
   config.install.root=/usr/local config.install.sudo=sudo mailmap
 ```
 
-Then run `mailmap --help` for the command line.
+The static libraries make the installed `mailmap` depend on no shared library
+outside the system.
+
+The identity register is a manifest list with one manifest per person:
+
+```
+: 1
+name: Jane Doe
+email: jane@example.org
+alias: J. Doe <jane@old.example.org>
+alias: <jdoe@example.com>
+```
+
+To update the `.mailmap` of the repository in the current directory, showing
+the changes and asking for confirmation first:
+
+```
+mailmap identities
+```
+
+To also commit the update, with the added and removed entries listed in the
+commit message:
+
+```
+mailmap --commit identities
+```
+
+To check that it is up to date, for example in CI:
+
+```
+mailmap --check identities
+```
+
+The comments at the beginning of the `mailmap` script describe the register
+rules and the options.

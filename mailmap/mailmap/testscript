@@ -1,25 +1,590 @@
 # Copyright (c) the IW4x authors (see the AUTHORS file).
 # SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-IW4x-Exception-1.1
 
+# Prevent git commands from reading the global and system configuration,
+# running maintenance tasks, and starting daemons.
+#
++export GIT_CONFIG_NOSYSTEM=1
++export GIT_CONFIG_GLOBAL=/dev/null
++export GIT_CONFIG_PARAMETERS="'maintenance.auto=false' 'gc.auto=0' \
+'core.fsmonitor=false' 'credential.helper=' 'core.hooksPath='"
+
+g = [cmdline] git -c user.name=Committer -c user.email=committer@example.org \
+  2>! >&2
+
+# Create the repository and commit to it with the specified author (and,
+# optionally, trailers). Every test names its repository repo.
+#
+init = [cmdline] $g init --quiet --initial-branch=main
+commit = [cmdline] $g -C repo commit --quiet --allow-empty --message 'Commit'
+
+# Run mailmap as a user whose git identity is configured.
+#
+mailmap = [cmdline] env GIT_AUTHOR_NAME=Committer \
+  GIT_AUTHOR_EMAIL=committer@example.org GIT_COMMITTER_NAME=Committer \
+  GIT_COMMITTER_EMAIL=committer@example.org $*
+
+header = '# Generated from the identity register by mailmap.'
+
 : help
 :
-$* --help >~'/usage: .+mailmap \[<options>\]/'
+$* --help 2>>~%EOE%
+  %usage: .+mailmap \[<options>\] <identities> \[<dir>\]%
+  %.*%*
+  EOE
 
 : version
 :
 $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
 
-: no-arguments
-: A command line with nothing to do is an error that shows the usage.
+: args
 :
-$* 2>~'/error: usage: .+mailmap \[<options>\]/' != 0
+{{
+  : none
+  :
+  $* 2>>~%EOE% != 0
+    %error: usage: .+mailmap \[<options>\] <identities> \[<dir>\]%
+    EOE
 
-: unknown-option
-: An option that is not recognized is named in the diagnostic.
-:
-$* --frobnicate 2>"error: unknown option '--frobnicate'" != 0
+  : too-many
+  :
+  $* r d x 2>>~%EOE% != 0
+    %error: usage: .+mailmap \[<options>\] <identities> \[<dir>\]%
+    EOE
 
-: unexpected-argument
-: A positional argument is not accepted.
+  : unknown-option
+  :
+  $* --frobnicate r 2>'error: unknown option: --frobnicate' != 0
+
+  : check-commit
+  :
+  $* --check --commit r 2>'error: --commit specified with --check' != 0
+
+  : identities-not-exist
+  :
+  $* r 2>"error: 'r' does not exist or is not a file" != 0
+
+  : dir-not-exist
+  :
+  {
+    touch r
+    $* r d 2>"error: 'd' does not exist or is not a directory" != 0
+  }
+
+  : dir-not-repository
+  :
+  {
+    touch r
+    mkdir d
+    $* r d 2>"error: 'd' is not inside a git working tree" != 0
+  }
+}}
+
+: register
 :
-$* foo 2>"error: unexpected argument 'foo'" != 0
+{{
+  : no-name
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      email: jane@example.org
+      EOI
+    $init repo &repo/***
+    $* r repo 2>"error: person without name in 'r'" != 0
+  }
+
+  : no-email
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      EOI
+    $init repo &repo/***
+    $* r repo 2>"error: person 'Jane Doe' without email in 'r'" != 0
+  }
+
+  : multiple-names
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      name: Jane
+      email: jane@example.org
+      EOI
+    $init repo &repo/***
+    $* r repo 2>"error: person 'Jane Doe' has multiple names in 'r'" != 0
+  }
+
+  : multiple-emails
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane@example.org
+      email: jane@example.com
+      EOI
+    $init repo &repo/***
+    $* r repo 2>"error: person with email 'jane@example.org' has multiple emails in 'r'" != 0
+  }
+
+  : unknown-value
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane@example.org
+      github: jdoe
+      EOI
+    $init repo &repo/***
+    $* r repo 2>"error: unknown value 'github' in 'r'" != 0
+  }
+
+  : invalid-name
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane <Doe>
+      email: jane@example.org
+      EOI
+    $init repo &repo/***
+    $* r repo 2>"error: invalid name 'Jane <Doe>' in 'r'" != 0
+  }
+
+  : invalid-email
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane
+      EOI
+    $init repo &repo/***
+    $* r repo 2>"error: invalid email 'jane' of 'Jane Doe' in 'r'" != 0
+  }
+
+  : invalid-alias
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane@example.org
+      alias: jdoe@example.com
+      EOI
+    $init repo &repo/***
+    $* r repo 2>"error: invalid alias 'jdoe@example.com' of 'Jane Doe' in 'r'" != 0
+  }
+
+  : shared-email
+  :
+  : Test that an email belongs to one person, whatever its case.
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane@example.org
+      :
+      name: John Roe
+      email: Jane@Example.org
+      EOI
+    $init repo &repo/***
+    $* r repo 2>>EOE != 0
+      error: email 'Jane@Example.org' belongs to multiple people in 'r'
+        info: 'Jane Doe' and 'John Roe'
+      EOE
+  }
+
+  : shared-email-alias
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane@example.org
+      :
+      name: John Roe
+      email: john@example.org
+      alias: <jane@example.org>
+      EOI
+    $init repo &repo/***
+    $* r repo 2>>EOE != 0
+      error: email 'jane@example.org' belongs to multiple people in 'r'
+        info: 'Jane Doe' and 'John Roe'
+      EOE
+  }
+
+  : shared-name-alias
+  :
+  : Test that a name at an email belongs to one person, whatever its case.
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane@example.org
+      alias: JD <shared@example.org>
+      :
+      name: John Roe
+      email: john@example.org
+      alias: jd <shared@example.org>
+      EOI
+    $init repo &repo/***
+    $* r repo 2>>EOE != 0
+      error: alias 'jd <shared@example.org>' belongs to multiple people in 'r'
+        info: 'Jane Doe' and 'John Roe'
+      EOE
+  }
+
+  : own-email
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane@example.org
+      alias: <Jane@example.org>
+      EOI
+    $init repo &repo/***
+    $* r repo 2>"error: alias '<Jane@example.org>' of 'Jane Doe' repeats their email in 'r'" != 0
+  }
+
+  : own-email-name
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane@example.org
+      alias: Jane <jane@example.org>
+      EOI
+    $init repo &repo/***
+    $* r repo 2>"error: alias 'Jane <jane@example.org>' of 'Jane Doe' is covered by their email in 'r'" != 0
+  }
+
+  : own-email-alias
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane@example.org
+      alias: JD <jd@example.com>
+      alias: <jd@example.com>
+      EOI
+    $init repo &repo/***
+    $* r repo 2>"error: alias 'JD <jd@example.com>' of 'Jane Doe' is covered by their email alias in 'r'" != 0
+  }
+
+  : preferred-identity
+  :
+  : Test that a name alias cannot take another person's commits.
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane@example.org
+      alias: John Roe <john@example.org>
+      :
+      name: John Roe
+      email: john@example.org
+      EOI
+    $init repo &repo/***
+    $* r repo 2>>EOE != 0
+      error: alias 'John Roe <john@example.org>' of 'Jane Doe' is the preferred identity of 'John Roe'
+        info: in 'r'
+      EOE
+  }
+}}
+
+: generate
+:
+{{
+  +cat <<'EOI' >=r
+    : 1
+    name: Jane Doe
+    email: jane@example.org
+    alias: J. Doe <jane@old.example.org>
+    alias: <jdoe@example.com>
+    :
+    name: John Roe
+    email: john@example.org
+    alias: John <shared@example.org>
+    :
+    name: Rick Poe
+    email: rick@example.org
+    alias: <shared@example.org>
+    EOI
+
+  : no-commits
+  :
+  : Test that a repository without commits gets a .mailmap without entries.
+  :
+  {
+    $init repo &repo/***
+    $* --yes ../r repo 2>!
+    cat repo/.mailmap >$header
+  }
+
+  : preferred
+  :
+  : Test that the preferred identity needs no entry.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'Jane Doe <jane@example.org>'
+    $* --yes ../r repo 2>!
+    cat repo/.mailmap >$header
+  }
+
+  : aliases
+  :
+  : Test that every alias form is mapped to its person, with the email of an
+  : email alias spelled as in the register.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'jane <jane@example.org>'
+    $commit --author 'J. Doe <jane@old.example.org>'
+    $commit --author 'JD <JDoe@Example.com>'
+    $* --yes ../r repo 2>!
+
+    cat repo/.mailmap >>"EOO"
+      $header
+      Jane Doe <jane@example.org> <jane@example.org>
+      Jane Doe <jane@example.org> <jdoe@example.com>
+      Jane Doe <jane@example.org> J. Doe <jane@old.example.org>
+      EOO
+
+    git -C repo log --use-mailmap --format='%aN <%aE>' >>EOO
+      Jane Doe <jane@example.org>
+      Jane Doe <jane@example.org>
+      Jane Doe <jane@example.org>
+      EOO
+  }
+
+  : shared-email
+  :
+  : Test that two people who committed with one email are told apart.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'John <shared@example.org>'
+    $commit --author 'Rick <shared@example.org>'
+    $* --yes ../r repo 2>!
+
+    git -C repo log --use-mailmap --format='%aN <%aE>' >>EOO
+      Rick Poe <rick@example.org>
+      John Roe <john@example.org>
+      EOO
+  }
+
+  : co-author
+  :
+  : Test that Co-authored-by trailers contribute identities.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'Jane Doe <jane@example.org>' \
+      --trailer 'Co-authored-by: J. Doe <jane@old.example.org>'
+    $* --yes ../r repo 2>!
+
+    cat repo/.mailmap >>"EOO"
+      $header
+      Jane Doe <jane@example.org> J. Doe <jane@old.example.org>
+      EOO
+  }
+
+  : subdirectory
+  :
+  : Test that a directory inside the working tree names its repository.
+  :
+  {
+    $init repo &repo/***
+    mkdir repo/sub
+    $commit --author 'jane <jane@example.org>'
+    $* --yes ../r repo/sub 2>!
+
+    cat repo/.mailmap >>"EOO"
+      $header
+      Jane Doe <jane@example.org> <jane@example.org>
+      EOO
+  }
+
+  : unattributed
+  :
+  : Test that identities the register does not attribute are listed and that
+  : the .mailmap is left alone.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'Stranger <stranger@example.net>'
+    $commit --author 'Jane Doe <jane@example.org>'
+
+    $* --yes ../r repo 2>>~%EOE% != 0
+      %error: history of '.+repo' has identities not in '../r'%
+        info: Stranger <stranger@example.net>
+      EOE
+
+    test -f repo/.mailmap == 1
+  }
+
+  : up-to-date
+  :
+  : Test that an up to date .mailmap is reported and left alone.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'jane <jane@example.org>'
+    $* --yes ../r repo 2>!
+
+    $* ../r repo 2>>~%EOE%
+      %'.+repo/\.mailmap' is up to date%
+      EOE
+  }
+
+  : uncommitted
+  :
+  : Test that uncommitted changes to the .mailmap are not overwritten.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'jane <jane@example.org>'
+    echo '# Mine.' >=repo/.mailmap
+
+    $* --yes ../r repo 2>>~%EOE% != 0
+      %error: '.+repo/\.mailmap' has uncommitted changes%
+      EOE
+
+    cat repo/.mailmap >'# Mine.'
+  }
+
+  : answer
+  :
+  : Test that without --yes the update needs an answer.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'jane <jane@example.org>'
+
+    $* ../r repo <'n' 2>! != 0
+    test -f repo/.mailmap == 1
+
+    $* ../r repo <'y' 2>!
+    test -f repo/.mailmap
+  }
+
+  : no-answer
+  :
+  : Test that the update fails if there is nobody to answer.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'jane <jane@example.org>'
+
+    $* ../r repo <:'' 2>>~%EOE% != 0
+      %.*%*
+      error: unable to read answer, use --yes to update without asking
+      EOE
+  }
+
+  : commit
+  :
+  : Test that --commit commits only the .mailmap, listing the entries it adds
+  : and removes in the message, and leaves whatever else is staged in the
+  : index.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'jane <jane@example.org>'
+
+    echo 'Jane Doe <jane@example.org> <jane@gone.example.org>' >=repo/.mailmap
+    $g -C repo add .mailmap
+    $g -C repo commit --quiet --message 'Add .mailmap' \
+      --author 'Jane Doe <jane@example.org>'
+
+    echo 'x' >=repo/x
+    $g -C repo add x
+
+    $mailmap --yes --commit ../r repo 2>!
+
+    git -C repo log -1 --format='%B' >>EOO
+      Update .mailmap
+
+        add    Jane Doe <jane@example.org> <jane@example.org>
+        remove Jane Doe <jane@example.org> <jane@gone.example.org>
+
+      EOO
+
+    git -C repo show --name-only --format= HEAD >'.mailmap'
+    git -C repo diff --cached --name-only >'x'
+  }
+
+  : commit-header
+  :
+  : Test that a commit that only rewrites comments has no message body.
+  :
+  {
+    $init repo &repo/***
+    $commit --author 'Jane Doe <jane@example.org>'
+
+    echo '# Hand-written.' >=repo/.mailmap
+    $g -C repo add .mailmap
+    $g -C repo commit --quiet --message 'Add .mailmap' \
+      --author 'Jane Doe <jane@example.org>'
+
+    $mailmap --yes --commit ../r repo 2>!
+
+    git -C repo log -1 --format='%B' >>EOO
+      Update .mailmap
+
+      EOO
+  }
+
+  : check
+  :
+  {{
+    : current
+    :
+    {
+      $init repo &repo/***
+      $commit --author 'jane <jane@example.org>'
+      $* --yes ../../r repo 2>!
+      $* --check ../../r repo
+    }
+
+    : stale
+    :
+    : Test that a .mailmap that differs is reported and left unchanged.
+    :
+    {
+      $init repo &repo/***
+      $commit --author 'jane <jane@example.org>'
+      echo '# Stale.' >=repo/.mailmap
+
+      $* --check ../../r repo 2>>~%EOE% != 0
+        %error: '.+repo/\.mailmap' is stale%
+          info: run mailmap without --check to update it
+        EOE
+
+      cat repo/.mailmap >'# Stale.'
+    }
+
+    : absent
+    :
+    {
+      $init repo &repo/***
+      $* --check ../../r repo 2>>~%EOE% != 0
+        %error: '.+repo/\.mailmap' is absent%
+          info: run mailmap without --check to update it
+        EOE
+    }
+  }}
+}}

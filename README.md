@@ -12,15 +12,16 @@ directory, which describes how to install and run it.
 
 ## Development
 
-The tools are written in bash and require bash 4.3 or later, git, and the
-`build2` toolchain 0.18.0 or later. The development setup uses the standard
-`bdep`-based workflow. For example:
+The tools are written in bash and require bash 4.3 or later, git, the
+`build2` toolchain 0.18.0 or later, and a C++ compiler, which builds the
+`libbutl.bash` support programs the tools use. The development setup uses the
+standard `bdep`-based workflow. For example:
 
 ```
 git clone https://github.com/iw4x-x64-stage/toolchain.git
 cd toolchain
 
-bdep init -C @default --
+bdep init -C @gcc cc config.cxx=g++
 bdep update
 bdep test
 ```

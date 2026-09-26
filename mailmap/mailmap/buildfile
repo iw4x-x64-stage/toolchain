@@ -1,10 +1,3 @@
-./: exe{mailmap}: in{mailmap} testscript
+import mods = libbutl.bash%bash{manifest-parser}
 
-# The script carries no bash modules, so it is preprocessed by the in rule.
-# Its substitutions use @ because $ is everywhere in bash.
-#
-exe{mailmap}:
-{
-  in.symbol = '@'
-  in.mode = lax
-}
+./: exe{mailmap}: in{mailmap} $mods testscript
