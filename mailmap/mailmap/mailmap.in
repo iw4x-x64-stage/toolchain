@@ -24,6 +24,9 @@
 # the same way git applies a .mailmap entry to it: an alias with a name takes
 # precedence and names and emails compare case-insensitively.
 #
+# The authors value (name, email, or none) specifies how authors(1) lists the
+# person in AUTHORS. It is only checked here.
+#
 # The register must attribute each identity to at most one person, which
 # holds if:
 #
@@ -372,7 +375,7 @@ function add_person () # <name> <email> <alias>...
 function load_identities ()
 {
   local n v
-  local name email named mailed started end
+  local name email authors named mailed listed relisted started end
   local as=()
 
   butl_manifest_parser_start "$identities"
@@ -399,6 +402,19 @@ function load_identities ()
           error "person '$name' without email in '$identities'"
         fi
 
+        if [[ "$relisted" ]]; then
+          error "person '$name' has multiple authors values in '$identities'"
+        fi
+
+        case "$authors" in
+          name|email|none)
+            ;;
+          *)
+            error "invalid authors value '$authors' of '$name' in \
+'$identities'"
+            ;;
+        esac
+
         add_person "$name" "$email" "${as[@]}"
       fi
 
@@ -407,6 +423,7 @@ function load_identities ()
       fi
 
       name= email= named= mailed= started=
+      authors=name listed= relisted=
       as=()
       continue
     fi
@@ -433,6 +450,14 @@ function load_identities ()
         ;;
       alias)
         as+=("$v")
+        ;;
+      authors)
+        if [[ "$listed" ]]; then
+          relisted=true
+        fi
+
+        authors="$v"
+        listed=true
         ;;
       *)
         error "unknown value '$n' in '$identities'"

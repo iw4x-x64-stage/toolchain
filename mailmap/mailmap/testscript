@@ -159,6 +159,48 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
     $* r repo 2>"error: unknown value 'github' in 'r'" != 0
   }
 
+  : authors
+  :
+  : Test that the authors value is accepted, which authors(1) reads.
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane@example.org
+      authors: email
+      EOI
+    $init repo &repo/***
+    $* --yes --no-commit r repo 2>!
+  }
+
+  : invalid-authors
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane@example.org
+      authors: yes
+      EOI
+    $init repo &repo/***
+    $* r repo 2>"error: invalid authors value 'yes' of 'Jane Doe' in 'r'" != 0
+  }
+
+  : multiple-authors
+  :
+  {
+    cat <<'EOI' >=r
+      : 1
+      name: Jane Doe
+      email: jane@example.org
+      authors: email
+      authors: none
+      EOI
+    $init repo &repo/***
+    $* r repo 2>"error: person 'Jane Doe' has multiple authors values in 'r'" != 0
+  }
+
   : invalid-name
   :
   {

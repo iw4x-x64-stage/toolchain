@@ -115,7 +115,9 @@ namespace mailmap
      identities of the person and can appear any number of times. An alias in
      the \c{\i{name} <\i{email}>} form matches the identity with this name and
      email and an alias in the \c{<\i{email}>} form matches every identity
-     with this email. Any other value is an error.
+     with this email. The \cb{authors} value specifies how the person is
+     listed in \cb{AUTHORS} (see \cb{authors(1)}) and \cb{mailmap} only
+     checks it. Any other value is an error.
 
      An identity is matched the same way git applies a \cb{.mailmap} entry to
      it: an alias with a name takes precedence and names and emails compare

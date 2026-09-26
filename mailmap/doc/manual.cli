@@ -184,6 +184,10 @@ with this email whatever its name. In the above example, the second alias
 covers any name Jane may have committed under with her
 \c{jdoe@example.com} email.
 
+The register also records how each person is listed in the \c{AUTHORS}
+file of a repository, with the \c{authors} value that the \c{authors} tool
+reads. \c{mailmap} only checks that this value is valid.
+
 Any other manifest value is an error.
 
 \h#register-matching|Matching|
