@@ -1,0 +1,8 @@
+./: exe{ignorerevs}
+
+# The script imports no bash modules, so the bash rule has to be requested
+# explicitly.
+#
+[rule_hint=bash] exe{ignorerevs}: in{ignorerevs}
+
+exe{ignorerevs}: testscript

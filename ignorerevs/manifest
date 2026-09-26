@@ -1,0 +1,21 @@
+: 1
+name: ignorerevs
+version: 0.1.0-a.0.z
+type: exe
+language: bash
+project: toolchain
+summary: Formatting commit tracking for IW4x projects.
+license: other: GPL-3.0-only with IW4x Linking Exception 1.1
+topics: development, git, blame, formatting
+description-file: README.md
+changes-file: NEWS
+url: https://iw4x.io/projects/toolchain/
+doc-url: https://iw4x.io/projects/toolchain/doc/
+src-url: https://github.com/iw4x-x64-stage/toolchain
+email: wroy@proton.me
+build-error-email: wroy@proton.me
+depends: * build2 >= 0.18.0
+depends: * bpkg >= 0.18.0
+requires: bash >= 4.3
+builds: default
+builds: -windows ; Not yet tested with the bash from Git for Windows.

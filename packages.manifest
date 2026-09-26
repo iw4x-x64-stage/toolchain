@@ -4,3 +4,5 @@ location: mailmap/
 location: authors/
 :
 location: headers/
+:
+location: ignorerevs/
