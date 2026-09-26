@@ -66,11 +66,5 @@ All the repositories are prepared before any of them is changed, so a problem
 in one leaves them all unchanged. Repositories inside another repository's
 working tree, such as submodules, are not visited.
 
-To check that it is up to date, for example in CI:
-
-```
-mailmap --check identities
-```
-
 The comments at the beginning of the `mailmap` script describe the register
 rules and the options.

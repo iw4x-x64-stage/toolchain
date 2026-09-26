@@ -53,11 +53,6 @@
 #   once for all of them. A failure to push one of them does not prevent
 #   pushing the rest.
 #
-# --check
-#
-#   Check that the .mailmap is up to date without changing anything. Fail if
-#   it differs from the generated one or does not exist.
-#
 # --commit
 #
 #   Commit the updated .mailmap. Only the .mailmap is committed, whatever else
@@ -103,7 +98,6 @@ function run () # <cmd> <arg>...
   "$@"
 }
 
-mode=update
 all=
 commit=
 push=
@@ -116,7 +110,6 @@ while [[ "$#" -gt 0 ]]; do
       info
       info "Options:"
       info "  --all|-a   Operate on every repository found under <dir>."
-      info "  --check    Check that .mailmap is up to date without changing it."
       info "  --commit   Commit the updated .mailmap."
       info "  --push     Push the commit to the upstream, implies --commit."
       info "  --yes      Do not ask for confirmation before updating."
@@ -131,10 +124,6 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     -a|--all)
       all=true
-      shift
-      ;;
-    --check)
-      mode=check
       shift
       ;;
     --commit)
@@ -165,14 +154,6 @@ done
 
 if [[ "$#" -lt 1 || "$#" -gt 2 ]]; then
   error "$usage"
-fi
-
-if [[ "$mode" == "check" && "$commit" ]]; then
-  if [[ "$push" ]]; then
-    error "--push specified with --check"
-  fi
-
-  error "--commit specified with --check"
 fi
 
 identities="$1"
@@ -689,7 +670,7 @@ function prepare () # <index>
     repo_state[$i]="stale"
   fi
 
-  if [[ "$mode" == "check" || "${repo_state[$i]}" == "current" ]]; then
+  if [[ "${repo_state[$i]}" == "current" ]]; then
     return 0
   fi
 
@@ -862,24 +843,6 @@ if [[ "$failed" -ne 0 ]]; then
   fi
 
   exit 1
-fi
-
-# Check.
-#
-if [[ "$mode" == "check" ]]; then
-  for ((i = 0; i != "${#repos[@]}"; ++i)); do
-    if [[ "${repo_state[$i]}" != "current" ]]; then
-      info "error: '${repos[$i]}/.mailmap' is ${repo_state[$i]}"
-      info "  info: run $(basename "$0") without --check to update it"
-      failed=$((failed + 1))
-    fi
-  done
-
-  if [[ "$failed" -ne 0 ]]; then
-    exit 1
-  fi
-
-  exit 0
 fi
 
 # Show the changes and ask for confirmation.

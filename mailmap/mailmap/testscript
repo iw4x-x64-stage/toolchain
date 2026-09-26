@@ -56,14 +56,6 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
   :
   $* --frobnicate r 2>'error: unknown option: --frobnicate' != 0
 
-  : check-commit
-  :
-  $* --check --commit r 2>'error: --commit specified with --check' != 0
-
-  : check-push
-  :
-  $* --check --push r 2>'error: --push specified with --check' != 0
-
   : all-dir-not-exist
   :
   {
@@ -755,29 +747,6 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
       test -f ws/b/.mailmap == 1
     }
 
-    : check
-    :
-    : Test that --check reports each stale repository.
-    :
-    {
-      mkdir ws
-
-      $repo ws/a &ws/a/***
-      $g -C ws/a commit --quiet --allow-empty --message 'Commit' \
-        --author 'jane <jane@example.org>'
-
-      $repo ws/b &ws/b/***
-      $g -C ws/b commit --quiet --allow-empty --message 'Commit' \
-        --author 'jane <jane@example.org>'
-
-      $* --yes ../../r ws/b 2>!
-
-      $* --all --check ../../r ws 2>>~%EOE% != 0
-        %error: '.+/ws/a/\.mailmap' is absent%
-          info: run mailmap without --check to update it
-        EOE
-    }
-
     : confirm
     :
     : Test that the update of every repository is confirmed once and that
@@ -840,46 +809,6 @@ $* --version >~'/mailmap \d+\.\d+\.\d+.*/'
         EOE
 
       git -C b.git log -1 --format='%s' main >'Update .mailmap'
-    }
-  }}
-
-  : check
-  :
-  {{
-    : current
-    :
-    {
-      $init repo &repo/***
-      $commit --author 'jane <jane@example.org>'
-      $* --yes ../../r repo 2>!
-      $* --check ../../r repo
-    }
-
-    : stale
-    :
-    : Test that a .mailmap that differs is reported and left unchanged.
-    :
-    {
-      $init repo &repo/***
-      $commit --author 'jane <jane@example.org>'
-      echo '# Stale.' >=repo/.mailmap
-
-      $* --check ../../r repo 2>>~%EOE% != 0
-        %error: '.+repo/\.mailmap' is stale%
-          info: run mailmap without --check to update it
-        EOE
-
-      cat repo/.mailmap >'# Stale.'
-    }
-
-    : absent
-    :
-    {
-      $init repo &repo/***
-      $* --check ../../r repo 2>>~%EOE% != 0
-        %error: '.+repo/\.mailmap' is absent%
-          info: run mailmap without --check to update it
-        EOE
     }
   }}
 }}
